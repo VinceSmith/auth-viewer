@@ -1,0 +1,182 @@
+{% extends "base.html" %}
+
+{% block content %}
+<div class="layout">
+    <!-- ── Top Bar ── -->
+    <header class="top-bar">
+        <button id="btn-flyout" class="flyout-toggle" title="Flow configuration">☰</button>
+        <h1>Entra OAuth Explorer</h1>
+        <div class="top-bar-spacer"></div>
+        <div class="session-status">
+            <span id="status-access" class="status-badge status-none">No access token</span>
+            <span id="status-refresh" class="status-badge status-none">No refresh token</span>
+        </div>
+    </header>
+
+    <!-- ── Flyout Backdrop ── -->
+    <div class="flyout-backdrop" id="flyout-backdrop"></div>
+
+    <!-- ── Flyout Panel ── -->
+    <aside class="flyout" id="flyout-panel">
+        <div class="flyout-header">
+            <span>Flow Configuration</span>
+            <button id="btn-flyout-close" class="flyout-close" title="Close (Esc)">✕</button>
+        </div>
+        <div class="flyout-body">
+            {% if error %}
+            <div class="error-banner">{{ error }}</div>
+            {% endif %}
+
+            <fieldset>
+                <legend>Flow Type</legend>
+                <div class="flow-options">
+                    <label><input type="radio" name="flow_type" value="auth_code" checked> Authorization Code</label>
+                    <label><input type="radio" name="flow_type" value="auth_code_pkce"> Auth Code + PKCE</label>
+                    <label><input type="radio" name="flow_type" value="client_credentials"> Client Credentials</label>
+                    <label><input type="radio" name="flow_type" value="obo"> On-Behalf-Of (OBO)</label>
+                    <label><input type="radio" name="flow_type" value="device_code"> Device Code</label>
+                    <label><input type="radio" name="flow_type" value="refresh_token"> Refresh Token</label>
+                    <label><input type="radio" name="flow_type" value="agent_id_autonomous"> Agent ID — Autonomous</label>
+                    <label><input type="radio" name="flow_type" value="agent_id_obo"> Agent ID — OBO</label>
+                </div>
+            </fieldset>
+
+            <fieldset>
+                <legend>Scope / Resource</legend>
+                <select id="scope-select">
+                    <option value="openid profile {{ settings.api_a_scope }}" data-flows="auth_code auth_code_pkce device_code refresh">OpenID + API A (delegated)</option>
+                    <option value="{{ settings.api_a_app_uri }}/.default" data-flows="auth_code auth_code_pkce client_credentials device_code refresh">API A (.default)</option>
+                    <option value="{{ settings.api_b_app_uri }}/.default" data-flows="auth_code auth_code_pkce client_credentials obo device_code refresh">API B (.default)</option>
+                    <option value="https://graph.microsoft.com/.default" data-flows="auth_code auth_code_pkce client_credentials obo device_code refresh agent_id_autonomous agent_id_obo">Microsoft Graph (.default)</option>
+                    <option value="https://graph.microsoft.com/User.Read" data-flows="auth_code auth_code_pkce device_code refresh">Graph User.Read</option>
+                    <option value="openid profile offline_access" data-flows="auth_code auth_code_pkce device_code">OpenID + offline_access</option>
+                </select>
+            </fieldset>
+
+            <div class="flow-specific" id="obo-options" style="display:none">
+                <fieldset>
+                    <legend>OBO — Token Source</legend>
+                    <div class="flow-options">
+                        <label><input type="radio" name="obo_mode" value="new" checked> New sign-in (full chain)</label>
+                        <label><input type="radio" name="obo_mode" value="reuse"> Use stored token</label>
+                    </div>
+                    <p class="hint" id="obo-reuse-hint" style="display:none">Requires a stored access token from a prior Auth Code flow.</p>
+                </fieldset>
+            </div>
+
+            <div class="flow-specific" id="agent-obo-options" style="display:none">
+                <fieldset>
+                    <legend>Agent ID OBO — Token Source</legend>
+                    <div class="flow-options">
+                        <label><input type="radio" name="agent_obo_mode" value="new" checked> New sign-in (full chain)</label>
+                        <label><input type="radio" name="agent_obo_mode" value="reuse"> Use stored token</label>
+                    </div>
+                    <p class="hint" id="agent-obo-reuse-hint" style="display:none">Requires a stored access token from a prior Auth Code flow.</p>
+                </fieldset>
+            </div>
+
+            <div class="flow-specific" id="device-code-options" style="display:none">
+                <fieldset>
+                    <legend>Device Code</legend>
+                    <p class="hint" id="device-code-instructions">Click Execute to start the device code flow.</p>
+                    <div id="device-code-info" style="display:none">
+                        <p>Go to: <a id="device-code-url" href="#" target="_blank"></a></p>
+                        <p>Enter code: <strong id="device-code-value"></strong></p>
+                        <button id="btn-poll" class="btn btn-secondary">Poll for Token</button>
+                    </div>
+                </fieldset>
+            </div>
+
+            <button id="btn-execute" class="btn btn-primary">Execute Flow</button>
+        </div>
+    </aside>
+
+    <!-- ── Main Split View ── -->
+    <div class="split-view" id="split-view">
+        <!-- Left: Diagram -->
+        <div class="diagram-pane" id="diagram-pane">
+            <div id="mermaid-container"></div>
+        </div>
+
+        <!-- Draggable Divider -->
+        <div class="split-divider" id="split-divider" title="Drag to resize"></div>
+
+        <!-- Right: Debug -->
+        <div class="debug-pane" id="debug-pane">
+            <!-- Step Timeline -->
+            <div class="step-timeline" id="step-timeline" style="display:none">
+                <div class="step-timeline-row">
+                    <button class="step-nav" id="btn-step-prev" title="Previous step (←)">◀</button>
+                    <div class="step-pills" id="step-pills"></div>
+                    <button class="step-nav" id="btn-step-next" title="Next step (→)">▶</button>
+                </div>
+                <div class="step-description" id="step-description"></div>
+            </div>
+
+            <!-- Scrollable detail — all sections shown per step -->
+            <div class="step-detail" id="step-detail">
+                <div class="step-detail-placeholder" id="step-placeholder">
+                    <p>Select a flow type with <strong>☰</strong> and click <strong>Execute</strong> to begin.</p>
+                </div>
+
+                <section class="detail-section" id="section-request" style="display:none">
+                    <h4 class="section-heading">HTTP Request</h4>
+                    <pre id="req-display" class="code-block"></pre>
+                </section>
+
+                <section class="detail-section" id="section-response" style="display:none">
+                    <h4 class="section-heading">HTTP Response</h4>
+                    <pre id="resp-display" class="code-block"></pre>
+                </section>
+
+                <section class="detail-section" id="section-access-token" style="display:none">
+                    <h4 class="section-heading">Access Token</h4>
+                    <div class="token-subsection">
+                        <h5>Decoded Header</h5>
+                        <pre id="at-header" class="code-block"></pre>
+                    </div>
+                    <div class="token-subsection">
+                        <h5>Decoded Payload</h5>
+                        <pre id="at-payload" class="code-block"></pre>
+                    </div>
+                    <div class="token-subsection">
+                        <h5>Raw Token</h5>
+                        <textarea id="at-raw" class="code-block raw-token" readonly></textarea>
+                    </div>
+                </section>
+
+                <section class="detail-section" id="section-id-token" style="display:none">
+                    <h4 class="section-heading">ID Token</h4>
+                    <div class="token-subsection">
+                        <h5>Decoded Header</h5>
+                        <pre id="id-header" class="code-block"></pre>
+                    </div>
+                    <div class="token-subsection">
+                        <h5>Decoded Payload</h5>
+                        <pre id="id-payload" class="code-block"></pre>
+                    </div>
+                    <div class="token-subsection">
+                        <h5>Raw Token</h5>
+                        <textarea id="id-raw" class="code-block raw-token" readonly></textarea>
+                    </div>
+                </section>
+
+                <section class="detail-section" id="section-refresh-token" style="display:none">
+                    <h4 class="section-heading">Refresh Token</h4>
+                    <p id="refresh-token-note" class="hint"></p>
+                </section>
+            </div>
+
+            <!-- Highlight Legend -->
+            <div class="highlight-legend" id="highlight-legend" style="display:none">
+                <span class="legend-label">Tracked IDs:</span>
+                <div class="legend-items" id="legend-items"></div>
+            </div>
+        </div>
+    </div>
+</div>
+{% endblock %}
+
+{% block scripts %}
+<script src="/static/app.js"></script>
+{% endblock %}
