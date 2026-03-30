@@ -23,4 +23,5 @@ Thumbs.db
 
 # Temp
 tmp_*.json
+easyauth-code.json
 .pytest_cache/

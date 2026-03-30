@@ -68,6 +68,83 @@ def _result_to_step(result: dict, *, label: str, description: str) -> dict:
 # Helpers
 # ---------------------------------------------------------------------------
 
+async def call_resource(*, access_token: str, scope: str) -> dict:
+    """Public wrapper — call the resource API matching the scope."""
+    return await _call_resource(access_token=access_token, scope=scope)
+
+
+async def _call_resource(*, access_token: str, scope: str) -> dict:
+    """Call the resource API matching *scope* and return a step dict.
+
+    Maps the token audience to the right local API endpoint:
+      - API A scope → localhost:8001/me
+      - API B scope → localhost:8002/data
+      - Graph .default → graph.microsoft.com/v1.0/organization (app-only)
+      - Graph User.Read or delegated → graph.microsoft.com/v1.0/me
+    """
+    if settings.api_a_app_id and settings.api_a_app_id in scope:
+        url = f"{settings.api_a_base_url}/me"
+        label = "Call API A"
+        desc = ("Present the access token to API A's /me endpoint. "
+                "API A validates the token and returns claims.")
+    elif settings.api_b_app_id and settings.api_b_app_id in scope:
+        url = f"{settings.api_b_base_url}/data"
+        label = "Call API B"
+        desc = ("Present the access token to API B's /data endpoint. "
+                "API B validates the token and returns data.")
+    elif "graph.microsoft.com" in scope:
+        # Delegated tokens have scp; app-only tokens have roles/no scp
+        decoded = decode_jwt(access_token) if access_token else {}
+        payload = decoded.get("payload", {})
+        has_user = bool(payload.get("scp") or payload.get("upn") or payload.get("preferred_username"))
+        if has_user:
+            url = "https://graph.microsoft.com/v1.0/me"
+            label = "Call Graph /me"
+            desc = ("Call Microsoft Graph /me with the delegated token. "
+                    "Returns the signed-in user's profile.")
+        else:
+            url = "https://graph.microsoft.com/v1.0/organization"
+            label = "Call Graph /organization"
+            desc = ("Call Microsoft Graph /organization with the app-only token. "
+                    "Returns tenant organization details.")
+    else:
+        return _build_step(
+            label="Call Resource (Skipped)",
+            description="Could not determine the target resource from the scope.",
+            highlights=_base_highlights(),
+        )
+
+    headers = {"Authorization": f"Bearer {access_token}"}
+    try:
+        async with httpx.AsyncClient() as client:
+            resp = await client.get(url, headers=headers)
+        try:
+            body = resp.json()
+        except Exception:
+            body = {"raw": resp.text}
+        status = resp.status_code
+    except Exception as e:
+        body = {"error": f"Could not reach {url}: {e}"}
+        status = 0
+
+    return _build_step(
+        label=label,
+        description=desc,
+        request={
+            "method": "GET",
+            "url": url,
+            "headers": {"Authorization": "Bearer <access_token>"},
+            "body": {},
+        },
+        response={
+            "status": status,
+            "headers": {},
+            "body": body,
+        },
+        highlights=_base_highlights(),
+    )
+
+
 def _build_form_body(params: dict) -> str:
     """URL-encode form body, filtering out None values."""
     return urllib.parse.urlencode({k: v for k, v in params.items() if v is not None})
@@ -161,6 +238,7 @@ def build_auth_code_url(
     url = f"{settings.authorize_endpoint}?{urllib.parse.urlencode(params)}"
 
     pkce_label = " + PKCE" if use_pkce else ""
+    display_params = {k: v for k, v in params.items() if k != "state"}
     authorize_step = _build_step(
         label=f"Authorize Redirect{pkce_label}",
         description=f"Browser redirects to Entra ID /authorize endpoint. "
@@ -169,11 +247,11 @@ def build_auth_code_url(
             "method": "GET",
             "url": settings.authorize_endpoint,
             "headers": {},
-            "body": params,
+            "body": display_params,
         },
         response={
             "status": 302,
-            "headers": {"Location": f"{settings.redirect_uri}?code=<authorization_code>&state={state}"},
+            "headers": {"Location": f"{settings.redirect_uri}?code=<authorization_code>"},
             "body": {"note": "Entra ID redirects browser back with authorization code in query string"},
         },
         highlights=_base_highlights(),
@@ -230,7 +308,7 @@ async def exchange_auth_code(
 # ---------------------------------------------------------------------------
 
 async def execute_client_credentials(*, scope: str) -> dict:
-    """Acquire an app-only token via client credentials."""
+    """Acquire an app-only token via client credentials, then call the resource."""
     params = {
         "client_id": settings.client_id,
         "client_secret": settings.client_secret,
@@ -238,7 +316,7 @@ async def execute_client_credentials(*, scope: str) -> dict:
         "scope": _coerce_default_scope(scope),
     }
     result = await _post_token_endpoint(settings.token_endpoint, params)
-    result["steps"] = [
+    steps = [
         _result_to_step(
             result,
             label="Client Credentials",
@@ -246,6 +324,143 @@ async def execute_client_credentials(*, scope: str) -> dict:
                         "No user involvement. Returns an app-only access token.",
         ),
     ]
+
+    access_token = result.get("response", {}).get("body", {}).get("access_token")
+    if access_token:
+        resource_step = await _call_resource(access_token=access_token, scope=scope)
+        steps.append(resource_step)
+    else:
+        steps.append(_build_step(
+            label="Call Resource (Skipped)",
+            description="No access token was acquired — cannot call the resource API.",
+            highlights=_base_highlights(),
+        ))
+
+    result["steps"] = steps
+    return result
+
+
+async def execute_client_credentials_chain(*, scope: str) -> dict:
+    """Client Credentials chain: Client → API A → API A does its own CC for downstream → downstream.
+
+    Step 1: Client acquires app-only token for API A
+    Step 2: Client calls API A /chain
+    Step 3: API A acquires its own app-only token for downstream (shown from response)
+    Step 4: API A calls downstream with its own token (shown from response)
+    """
+    # Determine downstream target from scope
+    is_graph = "graph.microsoft.com" in scope
+    downstream_label = "Graph" if is_graph else "API B"
+    downstream_scope = scope  # e.g. https://graph.microsoft.com/.default or api://api-b/.default
+    downstream_url = "https://graph.microsoft.com/v1.0/organization" if is_graph else f"{settings.api_b_base_url}/data"
+
+    # Step 1: Client gets token for API A
+    params = {
+        "client_id": settings.client_id,
+        "client_secret": settings.client_secret,
+        "grant_type": "client_credentials",
+        "scope": _coerce_default_scope(f"api://{settings.api_a_app_id}/.default"),
+    }
+    result = await _post_token_endpoint(settings.token_endpoint, params)
+    steps = [
+        _result_to_step(
+            result,
+            label="Client Credentials for API A",
+            description="Client app authenticates with client_id + client_secret to get "
+                        "an app-only token for API A. No user involvement.",
+        ),
+    ]
+
+    access_token = result.get("response", {}).get("body", {}).get("access_token")
+    if not access_token:
+        steps.append(_build_step(
+            label="Call API A (Skipped)",
+            description="No access token was acquired — cannot call API A.",
+            highlights=_base_highlights(),
+        ))
+        result["steps"] = steps
+        return result
+
+    # Step 2: Call API A /chain endpoint (which internally does CC for downstream + calls it)
+    api_a_url = f"{settings.api_a_base_url}/chain?target_scope={downstream_scope}&target_url={downstream_url}"
+    api_a_headers = {"Authorization": f"Bearer {access_token}"}
+    try:
+        async with httpx.AsyncClient() as client:
+            api_a_resp = await client.post(api_a_url, headers=api_a_headers)
+        try:
+            api_a_body = api_a_resp.json()
+        except Exception:
+            api_a_body = {"raw": api_a_resp.text}
+        api_a_status = api_a_resp.status_code
+    except Exception as e:
+        api_a_body = {"error": f"Could not reach API A: {e}"}
+        api_a_status = 0
+
+    steps.append(_build_step(
+        label="Call API A",
+        description="Client presents the app-only token to API A's /chain endpoint. "
+                    "API A validates the token (checks audience, issuer, signature).",
+        request={
+            "method": "POST",
+            "url": api_a_url,
+            "headers": {"Authorization": "Bearer <app_only_token>"},
+            "body": {},
+        },
+        response={
+            "status": api_a_status,
+            "headers": {},
+            "body": api_a_body,
+        },
+        highlights=_base_highlights(),
+    ))
+
+    # Step 3: Show API A's own CC grant to downstream (reconstructed from response)
+    cc_request = api_a_body.get("cc_request", {})
+    cc_response = api_a_body.get("cc_token_response", {})
+    if cc_request:
+        steps.append(_build_step(
+            label=f"API A → Client Credentials for {downstream_label}",
+            description=f"API A performs its own client_credentials grant to get a token "
+                        f"for {downstream_label}. This is NOT OBO — there is no user identity. "
+                        f"{downstream_label} will see API A as the caller (via appid/azp claim).",
+            request={
+                "method": "POST",
+                "url": settings.token_endpoint,
+                "headers": {"Content-Type": "application/x-www-form-urlencoded"},
+                "body": cc_request,
+            },
+            response={
+                "status": 200 if not api_a_body.get("error") else 400,
+                "headers": {},
+                "body": cc_response or {"note": "Token acquired (details omitted)"},
+            },
+            highlights=_base_highlights(),
+        ))
+
+    # Step 4: Show API A's call to downstream (from response)
+    downstream_response = api_a_body.get("downstream_response") or api_a_body.get("api_b_response")
+    actual_downstream_url = api_a_body.get("downstream_url", downstream_url)
+    if downstream_response:
+        steps.append(_build_step(
+            label=f"API A → Call {downstream_label}",
+            description=f"API A calls {downstream_label} with its own app-only token. "
+                        f"{downstream_label} sees API A's identity (not the original client). "
+                        f"The chain is complete: Client → API A → {downstream_label}, all app-only.",
+            request={
+                "method": "GET",
+                "url": actual_downstream_url,
+                "headers": {"Authorization": "Bearer <api_a_app_only_token>"},
+                "body": {},
+            },
+            response={
+                "status": 200,
+                "headers": {},
+                "body": downstream_response,
+            },
+            highlights=_base_highlights(),
+        ))
+
+    result["steps"] = steps
     return result
 
 
@@ -330,17 +545,6 @@ async def execute_obo(
     # ── Step 4: Call API B with the exchanged token ──
     obo_access_token = result.get("response", {}).get("body", {}).get("access_token")
     if obo_access_token:
-        obo_decoded = decode_jwt(obo_access_token)
-        steps.append(_build_step(
-            label="Exchanged Token",
-            description="The new token issued by Entra. Compare the audience (aud) "
-                        "with the input token — it has switched from API A to the "
-                        "downstream resource. The sub/oid still represent the original "
-                        "user, proving the identity carried through the exchange.",
-            tokens={"access_token": {"raw": obo_access_token, **obo_decoded}},
-            highlights=_base_highlights(),
-        ))
-
         # Actually call API B
         api_b_url = f"{settings.api_b_base_url}/data"
         api_b_headers = {"Authorization": f"Bearer {obo_access_token}"}
@@ -482,6 +686,31 @@ async def execute_refresh(*, refresh_token: str, scope: str) -> dict:
     return result
 
 
+async def silent_acquire(*, refresh_token: str, scope: str) -> dict:
+    """Silently acquire a token for a different resource using a refresh token.
+
+    This mimics what MSAL's acquireTokenSilent does: exchange the refresh token
+    for an access token scoped to a new resource, without user interaction.
+    """
+    params = {
+        "client_id": settings.client_id,
+        "client_secret": settings.client_secret,
+        "grant_type": "refresh_token",
+        "refresh_token": refresh_token,
+        "scope": scope,
+    }
+    result = await _post_token_endpoint(settings.token_endpoint, params)
+    result["step"] = _result_to_step(
+        result,
+        label="Silent Token Acquisition",
+        description=f"Client silently acquires a token for a different resource "
+                    f"using the stored refresh token. Scope: {scope}. "
+                    f"This is what MSAL's acquireTokenSilent() does — no user "
+                    f"interaction needed.",
+    )
+    return result
+
+
 # ---------------------------------------------------------------------------
 # 7. Agent ID — Autonomous (app-only)
 # ---------------------------------------------------------------------------
@@ -520,7 +749,7 @@ async def execute_agent_id_autonomous(*, scope: str) -> dict:
             "steps": [
                 parent_step,
                 _build_step(
-                    label="Token Exchange (Failed)",
+                    label="FMI Exchange (Failed)",
                     description="Step 1 failed — no parent token acquired.",
                     highlights=_base_highlights(),
                 ),
@@ -541,17 +770,30 @@ async def execute_agent_id_autonomous(*, scope: str) -> dict:
 
     exchange_step = _result_to_step(
         step2_result,
-        label="Token Exchange (Agent)",
+        label="FMI Exchange (Agent)",
         description="Agent Identity exchanges the parent token (as client_assertion) "
                     "for a downstream access token. The client_id is now the Agent "
                     "Identity — the identity has \"switched\" from Blueprint to Agent. "
                     "The resulting token's sub claim is the Agent Identity.",
     )
 
+    steps = [parent_step, exchange_step]
+
+    final_token = step2_result["response"]["body"].get("access_token")
+    if final_token:
+        resource_step = await _call_resource(access_token=final_token, scope=scope)
+        steps.append(resource_step)
+    else:
+        steps.append(_build_step(
+            label="Call Resource (Skipped)",
+            description="Token exchange did not return an access token — cannot call the resource API.",
+            highlights=_base_highlights(),
+        ))
+
     return {
         "step1": step1_result,
         "step2": step2_result,
-        "steps": [parent_step, exchange_step],
+        "steps": steps,
     }
 
 
@@ -560,10 +802,14 @@ async def execute_agent_id_autonomous(*, scope: str) -> dict:
 # ---------------------------------------------------------------------------
 
 async def execute_agent_id_obo(*, user_token: str, scope: str) -> dict:
-    """Two-step Agent ID OBO flow: parent token → OBO exchange.
+    """Agent ID OBO flow with full chain: agent exchange → API A → OBO → API B.
 
-    Step 1: client_credentials + fmi_path → parent token
-    Step 2: jwt-bearer with parent as client_assertion + user token as assertion
+    Step 1: Show input user token
+    Step 2: client_credentials + fmi_path → parent token (Blueprint)
+    Step 3: jwt-bearer OBO exchange → agent token scoped to API A
+    Step 4: Call API A with agent token
+    Step 5: API A OBO exchange → token scoped to downstream (API B / Graph)
+    Step 6: Call downstream resource
     """
     # Decode input user token for display
     input_decoded = decode_jwt(user_token) if user_token else {}
@@ -571,12 +817,12 @@ async def execute_agent_id_obo(*, user_token: str, scope: str) -> dict:
         label="User Token (Input)",
         description="The user's access token from a prior Auth Code flow, "
                     "scoped to the Agent Blueprint API. This will be used as "
-                    "the OBO assertion in Step 2.",
+                    "the OBO assertion in the agent exchange.",
         tokens={"access_token": {"raw": user_token, **input_decoded}},
         highlights=_base_highlights(),
     )
 
-    # Step 1: Get parent token (same as autonomous)
+    # Step 2: Get parent token (same as autonomous)
     step1_params = {
         "client_id": settings.agent_blueprint_app_id,
         "client_secret": settings.agent_blueprint_secret,
@@ -599,7 +845,6 @@ async def execute_agent_id_obo(*, user_token: str, scope: str) -> dict:
     if not parent_token:
         return {
             "step1": step1_result,
-            "step2": {"error": "Step 1 failed — no parent token acquired"},
             "steps": [
                 input_step,
                 parent_step,
@@ -611,7 +856,8 @@ async def execute_agent_id_obo(*, user_token: str, scope: str) -> dict:
             ],
         }
 
-    # Step 2: OBO exchange
+    # Step 3: OBO exchange — get agent token scoped to API A
+    api_a_scope = settings.api_a_scope or f"api://{settings.api_a_app_id}/access_as_user"
     step2_params = {
         "client_id": settings.agent_identity_id,
         "client_assertion_type": "urn:ietf:params:oauth:client-assertion-type:jwt-bearer",
@@ -619,7 +865,7 @@ async def execute_agent_id_obo(*, user_token: str, scope: str) -> dict:
         "grant_type": "urn:ietf:params:oauth:grant-type:jwt-bearer",
         "assertion": user_token,
         "requested_token_use": "on_behalf_of",
-        "scope": scope,
+        "scope": api_a_scope,
     }
     step2_result = await _post_token_endpoint(
         settings.agent_token_endpoint, step2_params,
@@ -627,16 +873,94 @@ async def execute_agent_id_obo(*, user_token: str, scope: str) -> dict:
 
     exchange_step = _result_to_step(
         step2_result,
-        label="OBO Exchange (Agent)",
-        description="Agent Identity exchanges the parent token + user token via OBO. "
-                    "The client_assertion is the parent token (proving agent identity), "
-                    "the assertion is the user token (proving user context). "
-                    "The result carries BOTH the agent identity AND the user's "
-                    "delegated permissions.",
+        label="OBO Exchange (Agent → API A)",
+        description="Agent Identity exchanges the parent token + user token via OBO "
+                    "to get a token scoped to API A. The client_assertion is the parent "
+                    "token (proving agent identity), the assertion is the user token "
+                    "(proving user context).",
     )
+
+    steps = [input_step, parent_step, exchange_step]
+
+    api_a_token = step2_result["response"]["body"].get("access_token")
+    if not api_a_token:
+        steps.append(_build_step(
+            label="Call API A (Skipped)",
+            description="OBO exchange did not return an access token — cannot call API A.",
+            highlights=_base_highlights(),
+        ))
+        return {"step1": step1_result, "step2": step2_result, "steps": steps}
+
+    # Step 4: Call API A with the agent token
+    api_a_url = f"{settings.api_a_base_url}/me"
+    api_a_headers = {"Authorization": f"Bearer {api_a_token}"}
+    try:
+        async with httpx.AsyncClient() as client:
+            api_a_resp = await client.get(api_a_url, headers=api_a_headers)
+        try:
+            api_a_body = api_a_resp.json()
+        except Exception:
+            api_a_body = {"raw": api_a_resp.text}
+        api_a_status = api_a_resp.status_code
+    except Exception as e:
+        api_a_body = {"error": f"Could not reach API A: {e}"}
+        api_a_status = 0
+
+    steps.append(_build_step(
+        label="Call API A",
+        description="Present the agent's access token to API A. "
+                    "API A validates the token and returns claims. "
+                    "The token carries the agent identity AND the user's context.",
+        request={
+            "method": "GET",
+            "url": api_a_url,
+            "headers": {"Authorization": "Bearer <agent_api_a_token>"},
+            "body": {},
+        },
+        response={
+            "status": api_a_status,
+            "headers": {},
+            "body": api_a_body,
+        },
+        highlights=_base_highlights(),
+    ))
+
+    # Step 5: OBO exchange — API A exchanges agent's token for downstream (API B)
+    obo_params = {
+        "client_id": settings.api_a_app_id,
+        "client_secret": settings.api_a_client_secret,
+        "grant_type": "urn:ietf:params:oauth:grant-type:jwt-bearer",
+        "assertion": api_a_token,
+        "requested_token_use": "on_behalf_of",
+        "scope": scope,
+    }
+    obo_result = await _post_token_endpoint(settings.token_endpoint, obo_params)
+
+    obo_step = _result_to_step(
+        obo_result,
+        label="OBO Token Exchange",
+        description="API A exchanges the agent's token for a downstream token. "
+                    "It authenticates as itself (client_id + client_secret) and "
+                    "presents the agent's API A token as an assertion. Entra issues "
+                    "a new token where the audience switches to the downstream API, "
+                    "but the user's identity is preserved.",
+    )
+    steps.append(obo_step)
+
+    # Step 6: Call downstream resource (API B / Graph)
+    obo_access_token = obo_result.get("response", {}).get("body", {}).get("access_token")
+    if obo_access_token:
+        resource_step = await _call_resource(access_token=obo_access_token, scope=scope)
+        steps.append(resource_step)
+    else:
+        steps.append(_build_step(
+            label="Call Resource (Skipped)",
+            description="OBO exchange did not return an access token — cannot call the downstream resource.",
+            highlights=_base_highlights(),
+        ))
 
     return {
         "step1": step1_result,
         "step2": step2_result,
-        "steps": [input_step, parent_step, exchange_step],
+        "steps": steps,
     }

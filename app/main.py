@@ -1,5 +1,7 @@
 """FastAPI application — Entra OAuth Explorer."""
 
+import json
+import base64
 import secrets
 import time as _time
 
@@ -34,12 +36,39 @@ _test_latest_callback: dict | None = None
 _test_callback_counter: int = 0
 
 
+def _is_token_expired(token: str) -> bool:
+    """Check if a JWT's exp claim is in the past."""
+    try:
+        payload_b64 = token.split(".")[1]
+        padding = 4 - len(payload_b64) % 4
+        if padding != 4:
+            payload_b64 += "=" * padding
+        payload = json.loads(base64.urlsafe_b64decode(payload_b64))
+        exp = payload.get("exp")
+        if exp and isinstance(exp, (int, float)):
+            return _time.time() > exp
+    except Exception:
+        pass
+    return False
+
+
 def _extract_subjects(result: dict) -> None:
     """Scan a flow result for token payloads and accumulate sub → name mappings."""
     steps = result.get("steps", [])
     if not steps:
         # Single-step results may have tokens at the top level
         steps = [result]
+    # Build a lookup of known app IDs → friendly names for resolving opaque subs
+    _known_ids: dict[str, str] = {}
+    for app_id, label in [
+        (settings.client_id, "Client App"),
+        (settings.api_a_app_id, "API A"),
+        (settings.api_b_app_id, "API B"),
+        (settings.agent_blueprint_app_id, "Agent Blueprint"),
+        (settings.agent_identity_id, "Agent Identity"),
+    ]:
+        if app_id:
+            _known_ids[app_id] = label
     # Index existing names for dedup (same user gets different pairwise subs per audience)
     known_names = set(_subject_store.values())
     for step in steps:
@@ -52,7 +81,7 @@ def _extract_subjects(result: dict) -> None:
             sub = payload.get("sub") or payload.get("oid")
             if not sub:
                 continue
-            # Already mapped by GUID?
+            # Already mapped?
             if sub in _subject_store:
                 continue
             # Find best human-readable name
@@ -61,13 +90,25 @@ def _extract_subjects(result: dict) -> None:
                 or payload.get("preferred_username")
                 or payload.get("upn")
                 or payload.get("app_displayname")
-                or payload.get("appid")  # fallback for app-only tokens
             )
+            if not name:
+                # For app-only / agent tokens: resolve appid/azp to a known label
+                appid = payload.get("appid") or payload.get("azp") or ""
+                name = _known_ids.get(appid)
+            if not name:
+                # Agent ID fmi_path subs contain the agent identity GUID at the end
+                # e.g. "/eid1/c/pub/t/.../b5f31ee4-80b3-4d24-9c9d-c706b14e584d"
+                for known_id, label in _known_ids.items():
+                    if known_id in sub:
+                        name = label
+                        break
             if not name:
                 continue
             # Skip if same name already tracked under a different sub
             # (Entra pairwise subs differ per audience for the same user)
             if name in known_names:
+                # Still store the mapping — different pairwise sub, same entity
+                _subject_store[sub] = name
                 continue
             _subject_store[sub] = name
             known_names.add(name)
@@ -79,8 +120,12 @@ def _extract_subjects(result: dict) -> None:
 
 @app.get("/", response_class=HTMLResponse)
 async def index(request: Request):
-    return templates.TemplateResponse("index.html", {
-        "request": request,
+    # Require sign-in: redirect to get ID token if no profile yet
+    sid = request.session.get("sid", "")
+    stored = _token_store.get(sid, {})
+    if not stored.get("user_profile"):
+        return RedirectResponse("/auth/login?scope=openid+profile", status_code=302)
+    return templates.TemplateResponse(request, "index.html", {
         "settings": settings,
         "flow_types": list(DIAGRAMS.keys()),
     })
@@ -92,7 +137,7 @@ async def index(request: Request):
 
 @app.get("/auth/login")
 async def auth_login(
-    request: Request, scope: str = "", use_pkce: bool = False,
+    request: Request, scope: str = "",
     flow_type: str = "", target_scope: str = "",
     prompt: str = "",
 ):
@@ -102,33 +147,27 @@ async def auth_login(
 
     # For OBO flows, override scope to target the correct audience
     if flow_type == "obo":
-        request.session["oauth_scope"] = f"openid profile {settings.api_a_scope}"
+        request.session["oauth_scope"] = f"openid profile offline_access {settings.api_a_scope}"
         request.session["flow_type"] = "obo"
         request.session["target_scope"] = target_scope
     elif flow_type == "agent_id_obo":
-        request.session["oauth_scope"] = f"openid profile {settings.agent_blueprint_scope}"
+        request.session["oauth_scope"] = f"openid profile offline_access {settings.agent_blueprint_scope}"
         request.session["flow_type"] = "agent_id_obo"
         request.session["target_scope"] = target_scope
     else:
-        request.session["oauth_scope"] = scope or f"openid profile {settings.api_a_scope}"
-        if use_pkce:
-            request.session["flow_type"] = "auth_code_pkce"
-        else:
-            request.session["flow_type"] = "auth_code"
+        request.session["oauth_scope"] = scope or f"openid profile offline_access {settings.api_a_scope}"
+        # Ensure offline_access is present so we get a refresh token
+        if "offline_access" not in request.session["oauth_scope"]:
+            request.session["oauth_scope"] = request.session["oauth_scope"].replace("openid", "openid offline_access", 1)
+        request.session["flow_type"] = "auth_code"
         request.session["target_scope"] = ""
+        request.session["call_scope"] = request.session["oauth_scope"]
 
-    if use_pkce and flow_type not in ("obo", "agent_id_obo"):
-        verifier, challenge = flows.generate_pkce_pair()
-        request.session["pkce_verifier"] = verifier
-    else:
-        challenge = None
-        request.session["pkce_verifier"] = None
+    request.session["pkce_verifier"] = None
 
     result = flows.build_auth_code_url(
         scope=request.session["oauth_scope"],
         state=state,
-        use_pkce=use_pkce,
-        code_challenge=challenge,
         prompt=prompt or None,
     )
     # Store the request details and step for display after callback
@@ -176,8 +215,7 @@ async def auth_callback(request: Request, code: str = "", state: str = "", error
             "counter": _test_callback_counter,
             "ts": _time.time(),
         }
-        return templates.TemplateResponse("index.html", {
-            "request": request,
+        return templates.TemplateResponse(request, "index.html", {
             "settings": settings,
             "flow_types": list(DIAGRAMS.keys()),
             "error": f"{error}: {error_description}",
@@ -201,8 +239,7 @@ async def auth_callback(request: Request, code: str = "", state: str = "", error
         elif not pending:
             pending = mem  # pure in-memory fallback
         if not pending:
-            return templates.TemplateResponse("index.html", {
-                "request": request,
+            return templates.TemplateResponse(request, "index.html", {
                 "settings": settings,
                 "flow_types": list(DIAGRAMS.keys()),
                 "error": f"State mismatch: expected {expected_state!r}, got {state!r}. "
@@ -241,10 +278,32 @@ async def auth_callback(request: Request, code: str = "", state: str = "", error
     resp_body = result.get("response", {}).get("body", {})
     session_id = request.session.get("sid") or secrets.token_urlsafe(16)
     request.session["sid"] = session_id
-    _token_store[session_id] = {
-        "access_token": resp_body.get("access_token", ""),
-        "refresh_token": resp_body.get("refresh_token", ""),
-    }
+    if session_id not in _token_store:
+        _token_store[session_id] = {}
+    # Store under the flow type so each OBO variant gets the right audience token
+    # Skip storing access_token for profile-only logins (no resource scope)
+    oauth_scope = request.session.get("oauth_scope", "")
+    has_resource_scope = "api://" in oauth_scope or "https://" in oauth_scope
+    token_key = flow_type if flow_type in ("obo", "agent_id_obo") else "auth_code"
+    if has_resource_scope:
+        _token_store[session_id][token_key] = {
+            "access_token": resp_body.get("access_token", ""),
+            "refresh_token": resp_body.get("refresh_token", ""),
+        }
+
+    # Store ID token claims for the profile avatar
+    raw_id_token = resp_body.get("id_token", "")
+    if raw_id_token:
+        from app.auth.token_utils import decode_jwt
+        decoded = decode_jwt(raw_id_token)
+        payload = decoded.get("payload", {})
+        _token_store[session_id]["user_profile"] = {
+            "name": payload.get("name", ""),
+            "preferred_username": payload.get("preferred_username", ""),
+            "oid": payload.get("oid", ""),
+        }
+        _token_store[session_id]["id_token_decoded"] = decoded
+        _token_store[session_id]["id_token_raw"] = raw_id_token
 
     # Include the initial /authorize step and exchange step in the result
     auth_request = request.session.get("auth_request")
@@ -281,9 +340,24 @@ async def auth_callback(request: Request, code: str = "", state: str = "", error
         result["steps"] = auth_steps + agent_steps
     else:
         result["steps"] = auth_steps
+        # Auth code (no OBO): call the resource with the acquired token
+        if user_token and has_resource_scope:
+            call_scope = request.session.pop("call_scope", "") or scope
+            resource_step = await flows.call_resource(
+                access_token=user_token, scope=call_scope,
+            )
+            result["steps"].append(resource_step)
 
     # Extract subjects from decoded tokens
     _extract_subjects(result)
+
+    # For profile-only logins (no resource scope), store result but redirect to home
+    if not has_resource_scope:
+        result_id = secrets.token_urlsafe(16)
+        _result_store[result_id] = {"result": result, "flow_type": "profile_login"}
+        request.session["result_id"] = result_id
+        request.session["last_flow"] = "profile_login"
+        return RedirectResponse("/", status_code=303)
 
     # Store full result server-side (too large for cookie)
     result_id = secrets.token_urlsafe(16)
@@ -317,63 +391,70 @@ async def api_execute(request: Request):
 
     try:
         sid = request.session.get("sid", "")
-        stored_tokens = _token_store.get(sid, {})
+        stored = _token_store.get(sid, {})
 
-        if flow_type == "client_credentials":
+        if flow_type == "auth_code":
+            auth_code_tokens = stored.get("auth_code") or {}
+            user_token = auth_code_tokens.get("access_token", "")
+            if not user_token:
+                return JSONResponse({"error": "No user token available. Sign in first."}, status_code=400)
+            if _is_token_expired(user_token):
+                return JSONResponse({"error": "token_expired", "message": "Your access token has expired. Please sign in again."}, status_code=400)
+            resource_step = await flows.call_resource(access_token=user_token, scope=scope)
+            result = {"steps": [resource_step]}
+
+        elif flow_type == "client_credentials":
             result = await flows.execute_client_credentials(scope=scope)
 
+        elif flow_type == "client_credentials_chain":
+            result = await flows.execute_client_credentials_chain(scope=scope)
+
         elif flow_type == "obo":
-            user_token = body.get("user_token") or stored_tokens.get("access_token", "")
+            obo_tokens = stored.get("obo") or stored.get("auth_code") or {}
+            user_token = body.get("user_token") or obo_tokens.get("access_token", "")
             if not user_token:
                 return JSONResponse({"error": "No user token available. Run Auth Code flow first."}, status_code=400)
+            if _is_token_expired(user_token):
+                return JSONResponse({"error": "token_expired", "message": "Your access token has expired. Please sign in again."}, status_code=400)
             result = await flows.execute_obo(user_access_token=user_token, scope=scope)
-
-        elif flow_type == "device_code_start":
-            result = await flows.start_device_code_flow(scope=scope)
-            # Store device_code for polling
-            device_code = result.get("response", {}).get("body", {}).get("device_code")
-            if device_code:
-                request.session["device_code"] = device_code
-            return JSONResponse({"result": result, "diagram": get_diagram("device_code")})
-
-        elif flow_type == "device_code_poll":
-            device_code = body.get("device_code") or request.session.get("device_code", "")
-            if not device_code:
-                return JSONResponse({"error": "No device code available. Start device code flow first."}, status_code=400)
-            result = await flows.poll_device_code(device_code=device_code)
-            # Store tokens server-side if successful
-            resp_body = result.get("response", {}).get("body", {})
-            if "access_token" in resp_body:
-                sid = request.session.get("sid") or secrets.token_urlsafe(16)
-                request.session["sid"] = sid
-                _token_store[sid] = {
-                    "access_token": resp_body.get("access_token", ""),
-                    "refresh_token": resp_body.get("refresh_token", ""),
-                }
-
-        elif flow_type == "refresh_token":
-            refresh_token = body.get("refresh_token") or stored_tokens.get("refresh_token", "")
-            if not refresh_token:
-                return JSONResponse({"error": "No refresh token available. Run Auth Code flow first."}, status_code=400)
-            result = await flows.execute_refresh(refresh_token=refresh_token, scope=scope)
-            # Update stored tokens server-side
-            resp_body = result.get("response", {}).get("body", {})
-            if "access_token" in resp_body:
-                sid = request.session.get("sid") or secrets.token_urlsafe(16)
-                request.session["sid"] = sid
-                _token_store[sid] = {
-                    "access_token": resp_body.get("access_token", ""),
-                    "refresh_token": resp_body.get("refresh_token", ""),
-                }
 
         elif flow_type == "agent_id_autonomous":
             result = await flows.execute_agent_id_autonomous(scope=scope)
 
         elif flow_type == "agent_id_obo":
-            user_token = body.get("user_token") or stored_tokens.get("access_token", "")
+            agent_tokens = stored.get("agent_id_obo") or {}
+            user_token = body.get("user_token") or agent_tokens.get("access_token", "")
+            silent_step = None
+
+            # Silent acquire: use refresh token to get Blueprint-scoped token
+            if not user_token:
+                auth_code_tokens = stored.get("auth_code") or {}
+                rt = auth_code_tokens.get("refresh_token", "")
+                if rt and settings.agent_blueprint_scope:
+                    silent = await flows.silent_acquire(
+                        refresh_token=rt,
+                        scope=f"openid profile {settings.agent_blueprint_scope}",
+                    )
+                    silent_token = silent.get("response", {}).get("body", {}).get("access_token", "")
+                    if silent_token:
+                        user_token = silent_token
+                        silent_step = silent.get("step")
+                        # Store for future reuse
+                        session_id = request.session.get("sid", "")
+                        if session_id and session_id in _token_store:
+                            _token_store[session_id]["agent_id_obo"] = {
+                                "access_token": silent_token,
+                                "refresh_token": silent.get("response", {}).get("body", {}).get("refresh_token", rt),
+                            }
+
             if not user_token:
                 return JSONResponse({"error": "No user token available. Run Auth Code flow first."}, status_code=400)
+            if _is_token_expired(user_token):
+                return JSONResponse({"error": "token_expired", "message": "Your access token has expired. Please sign in again."}, status_code=400)
+
             result = await flows.execute_agent_id_obo(user_token=user_token, scope=scope)
+            if silent_step:
+                result.setdefault("steps", []).insert(0, silent_step)
 
         else:
             return JSONResponse({"error": f"Unknown flow type: {flow_type}"}, status_code=400)
@@ -390,43 +471,23 @@ async def api_execute(request: Request):
 
 @app.get("/api/highlights")
 async def api_highlights():
-    """Return the highlight color map for known IDs."""
-    # Color roles — each role gets a consistent color
-    role_colors = {
-        "tenant": "#ff6b6b",
-        "client": "#4ecdc4",
-        "resource_a": "#45b7d1",
-        "resource_b": "#96ceb4",
-        "blueprint": "#dda0dd",
-        "agent": "#ffd93d",
-        "token_exchange": "#ff8a65",
-        "subject": "#b39ddb",
-    }
+    """Return a map of known IDs/subs → human-readable labels."""
     highlights = {}
     mapping = [
-        (settings.tenant_id, "Tenant ID", "tenant"),
-        (settings.client_id, "Client App", "client"),
-        (settings.api_a_app_id, "API A", "resource_a"),
-        (settings.api_b_app_id, "API B", "resource_b"),
-        (settings.agent_blueprint_app_id, "Agent Blueprint", "blueprint"),
-        (settings.agent_identity_id, "Agent Identity", "agent"),
-        ("fb60f99c-7a34-4190-8149-302f77469936", "AzureADTokenExchange", "token_exchange"),
+        (settings.client_id, "Client App"),
+        (settings.api_a_app_id, "API A"),
+        (settings.api_b_app_id, "API B"),
+        (settings.agent_blueprint_app_id, "Agent Blueprint"),
+        (settings.agent_identity_id, "Agent Identity"),
+        ("fb60f99c-7a34-4190-8149-302f77469936", "AzureADTokenExchange"),
     ]
-    for value, label, role in mapping:
+    for value, label in mapping:
         if value:
-            highlights[value] = {
-                "label": label,
-                "role": role,
-                "color": role_colors.get(role, "#ffffff"),
-            }
-    # Add discovered subjects
+            highlights[value] = {"label": label}
+    # Add discovered subjects (opaque pairwise subs → friendly names)
     for sub_id, name in _subject_store.items():
         if sub_id not in highlights:
-            highlights[sub_id] = {
-                "label": f"Subject: {name}",
-                "role": "subject",
-                "color": role_colors.get("subject", "#ffffff"),
-            }
+            highlights[sub_id] = {"label": name}
     return JSONResponse(highlights)
 
 
@@ -440,11 +501,39 @@ async def api_diagram(flow_type: str):
 async def api_session(request: Request):
     """Return current session token state (for UI)."""
     sid = request.session.get("sid", "")
-    tokens = _token_store.get(sid, {})
+    stored = _token_store.get(sid, {})
+    obo_tokens = stored.get("obo") or stored.get("auth_code") or {}
+    agent_tokens = stored.get("agent_id_obo") or {}
+    auth_code_tokens = stored.get("auth_code") or {}
+    obo_at = obo_tokens.get("access_token", "")
+    agent_at = agent_tokens.get("access_token", "")
+    auth_code_at = auth_code_tokens.get("access_token", "")
+    any_at = obo_at or agent_at or auth_code_at
+    any_rt = (obo_tokens.get("refresh_token")
+              or agent_tokens.get("refresh_token")
+              or auth_code_tokens.get("refresh_token"))
     return JSONResponse({
-        "has_access_token": bool(tokens.get("access_token")),
-        "has_refresh_token": bool(tokens.get("refresh_token")),
+        "has_access_token": bool(any_at),
+        "has_id_token": bool(stored.get("id_token_raw")),
+        "has_refresh_token": bool(any_rt),
+        "token_expired": _is_token_expired(any_at) if any_at else False,
         "last_flow": request.session.get("last_flow"),
+    })
+
+
+@app.get("/api/me")
+async def api_me(request: Request):
+    """Return the signed-in user's profile and decoded ID token."""
+    sid = request.session.get("sid", "")
+    stored = _token_store.get(sid, {})
+    profile = stored.get("user_profile")
+    if not profile:
+        return JSONResponse({"signed_in": False})
+    return JSONResponse({
+        "signed_in": True,
+        "profile": profile,
+        "id_token": stored.get("id_token_decoded"),
+        "id_token_raw": stored.get("id_token_raw", ""),
     })
 
 

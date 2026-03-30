@@ -127,12 +127,16 @@ $bodyFile = "$env:TEMP\auth-viewer-apia-perms.json"
     {
       "resourceAppId": "$apiBAppId",
       "resourceAccess": [{"id": "$apiBScopeId", "type": "Scope"}]
+    },
+    {
+      "resourceAppId": "00000003-0000-0000-c000-000000000000",
+      "resourceAccess": [{"id": "e1fe6dd8-ba31-4d61-89e7-88639da4683d", "type": "Scope"}]
     }
   ]
 }
 "@ | Set-Content $bodyFile -Encoding UTF8
 az rest --method PATCH --url "https://graph.microsoft.com/v1.0/applications/$apiAObjectId" --headers "Content-Type=application/json" --body "@$bodyFile"
-Write-Host "Set API B delegated permission on API A (idempotent)" -ForegroundColor Green
+Write-Host "Set API B + Graph User.Read delegated permissions on API A (idempotent)" -ForegroundColor Green
 
 
 Write-Host "`n=== Registering auth-viewer-client (confidential client) ===" -ForegroundColor Yellow
@@ -254,6 +258,7 @@ Write-Host "`n=== Granting admin consent ===" -ForegroundColor Yellow
 # Grant delegated permission consent (oauth2PermissionGrants)
 az ad app permission grant --id $clientAppId --api $apiAAppId --scope "access_as_user" 2>$null
 az ad app permission grant --id $apiAAppId --api $apiBAppId --scope "read" 2>$null
+az ad app permission grant --id $apiAAppId --api 00000003-0000-0000-c000-000000000000 --scope "User.Read openid profile" 2>$null
 az ad app permission admin-consent --id $clientObjectId 2>$null
 az ad app permission admin-consent --id $apiAObjectId 2>$null
 Write-Host "Admin consent granted" -ForegroundColor Green

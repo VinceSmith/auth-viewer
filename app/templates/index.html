@@ -8,10 +8,116 @@
         <h1>Entra OAuth Explorer</h1>
         <div class="top-bar-spacer"></div>
         <div class="session-status">
+            <span id="status-id" class="status-badge status-none">No ID token</span>
             <span id="status-access" class="status-badge status-none">No access token</span>
             <span id="status-refresh" class="status-badge status-none">No refresh token</span>
         </div>
+        <button id="btn-about" class="about-toggle" title="About this app">ⓘ</button>
+        <div id="profile-avatar" class="profile-avatar" style="display:none" title="">
+            <span id="profile-initials" class="profile-initials"></span>
+            <div id="profile-tooltip" class="profile-tooltip">
+                <div id="tooltip-name" class="tooltip-name"></div>
+                <div id="tooltip-upn" class="tooltip-detail"></div>
+                <div id="tooltip-oid" class="tooltip-detail tooltip-mono"></div>
+            </div>
+        </div>
     </header>
+
+    <!-- ── About Pane ── -->
+    <div class="about-pane-backdrop" id="about-pane-backdrop"></div>
+    <aside class="about-pane" id="about-pane">
+        <div class="id-pane-header">
+            <span>About Entra OAuth Explorer</span>
+            <button id="btn-about-close" class="flyout-close" title="Close (Esc)">✕</button>
+        </div>
+        <div class="id-pane-body about-body">
+            <section class="about-section">
+                <h3>What is this?</h3>
+                <p>Entra OAuth Explorer is an interactive teaching tool that visualizes OAuth 2.0 and Entra ID token flows in real time. It shows you exactly what happens at every step &mdash; the HTTP requests, the token exchanges, and the decoded JWT claims &mdash; so you can understand how authentication actually works.</p>
+            </section>
+            <section class="about-section">
+                <h3>How to Use</h3>
+                <ol>
+                    <li>Click <strong>☰</strong> to open the flow configuration menu</li>
+                    <li>Choose a <strong>grant type</strong> (User Auth or Client Credentials) and <strong>client type</strong></li>
+                    <li>Pick a <strong>target resource</strong> from the dropdown</li>
+                    <li>Click <strong>Execute Flow</strong> (or <strong>Sign In &amp; Execute</strong> for user flows)</li>
+                    <li>Step through results using the ◀ ▶ controls</li>
+                    <li>Explore each step’s Summary, HTTP Request, HTTP Response, and Access Token tabs</li>
+                    <li>Click your <strong>profile avatar</strong> to inspect the ID token</li>
+                </ol>
+            </section>
+            <section class="about-section">
+                <h3>Configuration</h3>
+                <p>Flows are configured with three settings in the <strong>☰</strong> menu:</p>
+                <h4>Grant Type</h4>
+                <ul>
+                    <li><strong>User Auth Flow (Delegated)</strong> &mdash; Uses the OAuth 2.0 Authorization Code grant. A user signs in via browser redirect and consents to scopes. The resulting token carries the user's identity (<code>sub</code>, <code>upn</code>) and delegated permissions (<code>scp</code>).</li>
+                    <li><strong>Client Credentials Flow</strong> &mdash; Uses the OAuth 2.0 Client Credentials grant. No user involved &mdash; the app authenticates as itself using a client secret. The resulting token carries application permissions (<code>roles</code>) and the app's identity.</li>
+                </ul>
+                <h4>Client Type</h4>
+                <ul>
+                    <li><strong>App (Service Principal)</strong> &mdash; A standard Entra ID application. The client app directly requests tokens from Entra ID using its own credentials.</li>
+                    <li><strong>Agent (Agent ID)</strong> &mdash; An Entra Agent Identity. The Blueprint app acquires a parent token, then the Agent Identity exchanges it for a downstream token via Workload Identity Federation. In delegated mode, the agent also performs an OBO exchange to preserve the user's context.</li>
+                </ul>
+                <h4>Target Resource</h4>
+                <ul>
+                    <li><strong>API A / API B / Graph</strong> &mdash; Direct token acquisition for a single resource.</li>
+                    <li><strong>API A &rarr; API B (OBO)</strong> &mdash; Multi-hop delegated chain. The client gets a user token for API A, then API A exchanges it for an API B token via On-Behalf-Of.</li>
+                    <li><strong>API A &rarr; Graph (OBO)</strong> &mdash; Same OBO pattern, targeting Microsoft Graph as the downstream resource.</li>
+                    <li><strong>API A &rarr; API B (chain)</strong> &mdash; Multi-hop app-only chain. The client gets an app token for API A, then API A does its own client credentials grant for API B.</li>
+                    <li><strong>API A &rarr; Graph (chain)</strong> &mdash; Same chain pattern, targeting Microsoft Graph downstream.</li>
+                </ul>
+            </section>
+            <section class="about-section">
+                <h3>Architecture</h3>
+                <p>Three FastAPI services running together:</p>
+                <ul>
+                    <li><strong>Client App</strong> &mdash; Main web app with UI, handles OAuth redirects and token exchanges</li>
+                    <li><strong>API A</strong> &mdash; Middle-tier API that validates tokens and performs OBO exchanges</li>
+                    <li><strong>API B</strong> &mdash; Downstream protected resource, the final target in OBO chains</li>
+                </ul>
+            </section>
+            <section class="about-section">
+                <h3>App Registrations</h3>
+                <p>Five Entra ID app registrations provide the identity infrastructure:</p>
+                <ul>
+                    <li><strong>Client App</strong> &mdash; Confidential client that initiates all flows. Has delegated permissions to API A, API B, Graph, and the Blueprint.</li>
+                    <li><strong>API A</strong> &mdash; Exposes an <code>access_as_user</code> scope. Configured as an OBO client with permission to call API B on behalf of the user.</li>
+                    <li><strong>API B</strong> &mdash; Exposes a <code>read</code> scope. The downstream resource that only accepts tokens with its own audience.</li>
+                    <li><strong>Agent Blueprint</strong> &mdash; Defines the identity template for AI agents. Exposes an <code>access_as_user</code> scope and acts as the parent in agent token exchanges.</li>
+                    <li><strong>Agent Identity</strong> &mdash; A workload identity (service principal) created from the Blueprint. Uses Workload Identity Federation for token exchange without stored secrets.</li>
+                </ul>
+            </section>
+            <section class="about-section">
+                <h3>Built By</h3>
+                <p>Created by <strong>Vince Smith</strong> using <strong>GitHub Copilot</strong> (Claude Opus 4.6) in VS Code. The entire application &mdash; backend, frontend, Entra configuration scripts, and test suite &mdash; was built through conversation-driven development with an AI coding agent.</p>
+            </section>
+        </div>
+    </aside>
+
+    <!-- ── ID Token Context Pane ── -->
+    <div class="id-pane-backdrop" id="id-pane-backdrop"></div>
+    <aside class="id-pane" id="id-pane">
+        <div class="id-pane-header">
+            <span>ID Token</span>
+            <button id="btn-id-pane-close" class="flyout-close" title="Close (Esc)">✕</button>
+        </div>
+        <div class="id-pane-body">
+            <div class="token-subsection">
+                <h5>Decoded Header</h5>
+                <pre id="id-pane-header" class="code-block"></pre>
+            </div>
+            <div class="token-subsection">
+                <h5>Decoded Payload</h5>
+                <pre id="id-pane-payload" class="code-block"></pre>
+            </div>
+            <div class="token-subsection">
+                <h5>Raw Token</h5>
+                <textarea id="id-pane-raw" class="code-block raw-token" readonly></textarea>
+            </div>
+        </div>
+    </aside>
 
     <!-- ── Flyout Backdrop ── -->
     <div class="flyout-backdrop" id="flyout-backdrop"></div>
@@ -28,64 +134,35 @@
             {% endif %}
 
             <fieldset>
-                <legend>Flow Type</legend>
+                <legend>Grant Type</legend>
                 <div class="flow-options">
-                    <label><input type="radio" name="flow_type" value="auth_code" checked> Authorization Code</label>
-                    <label><input type="radio" name="flow_type" value="auth_code_pkce"> Auth Code + PKCE</label>
-                    <label><input type="radio" name="flow_type" value="client_credentials"> Client Credentials</label>
-                    <label><input type="radio" name="flow_type" value="obo"> On-Behalf-Of (OBO)</label>
-                    <label><input type="radio" name="flow_type" value="device_code"> Device Code</label>
-                    <label><input type="radio" name="flow_type" value="refresh_token"> Refresh Token</label>
-                    <label><input type="radio" name="flow_type" value="agent_id_autonomous"> Agent ID — Autonomous</label>
-                    <label><input type="radio" name="flow_type" value="agent_id_obo"> Agent ID — OBO</label>
+                    <label><input type="radio" name="auth_category" value="user_auth" checked> User Auth Flow (Delegated)</label>
+                    <label id="reuse-id-label" style="display:none; margin-left: 1.2em;"><input type="checkbox" id="reuse-id-token" checked> Use stored ID token (skip sign-in)</label>
+                    <label><input type="radio" name="auth_category" value="client_credentials"> Client Credentials Flow</label>
                 </div>
             </fieldset>
 
             <fieldset>
-                <legend>Scope / Resource</legend>
-                <select id="scope-select">
-                    <option value="openid profile {{ settings.api_a_scope }}" data-flows="auth_code auth_code_pkce device_code refresh">OpenID + API A (delegated)</option>
-                    <option value="{{ settings.api_a_app_uri }}/.default" data-flows="auth_code auth_code_pkce client_credentials device_code refresh">API A (.default)</option>
-                    <option value="{{ settings.api_b_app_uri }}/.default" data-flows="auth_code auth_code_pkce client_credentials obo device_code refresh">API B (.default)</option>
-                    <option value="https://graph.microsoft.com/.default" data-flows="auth_code auth_code_pkce client_credentials obo device_code refresh agent_id_autonomous agent_id_obo">Microsoft Graph (.default)</option>
-                    <option value="https://graph.microsoft.com/User.Read" data-flows="auth_code auth_code_pkce device_code refresh">Graph User.Read</option>
-                    <option value="openid profile offline_access" data-flows="auth_code auth_code_pkce device_code">OpenID + offline_access</option>
-                </select>
+                <legend>Client Type</legend>
+                <div class="flow-options">
+                    <label><input type="radio" name="client_type" value="app" checked> App (Service Principal)</label>
+                    <label><input type="radio" name="client_type" value="agent"> Agent (Agent ID / Agent User)</label>
+                </div>
             </fieldset>
 
-            <div class="flow-specific" id="obo-options" style="display:none">
-                <fieldset>
-                    <legend>OBO — Token Source</legend>
-                    <div class="flow-options">
-                        <label><input type="radio" name="obo_mode" value="new" checked> New sign-in (full chain)</label>
-                        <label><input type="radio" name="obo_mode" value="reuse"> Use stored token</label>
-                    </div>
-                    <p class="hint" id="obo-reuse-hint" style="display:none">Requires a stored access token from a prior Auth Code flow.</p>
-                </fieldset>
-            </div>
-
-            <div class="flow-specific" id="agent-obo-options" style="display:none">
-                <fieldset>
-                    <legend>Agent ID OBO — Token Source</legend>
-                    <div class="flow-options">
-                        <label><input type="radio" name="agent_obo_mode" value="new" checked> New sign-in (full chain)</label>
-                        <label><input type="radio" name="agent_obo_mode" value="reuse"> Use stored token</label>
-                    </div>
-                    <p class="hint" id="agent-obo-reuse-hint" style="display:none">Requires a stored access token from a prior Auth Code flow.</p>
-                </fieldset>
-            </div>
-
-            <div class="flow-specific" id="device-code-options" style="display:none">
-                <fieldset>
-                    <legend>Device Code</legend>
-                    <p class="hint" id="device-code-instructions">Click Execute to start the device code flow.</p>
-                    <div id="device-code-info" style="display:none">
-                        <p>Go to: <a id="device-code-url" href="#" target="_blank"></a></p>
-                        <p>Enter code: <strong id="device-code-value"></strong></p>
-                        <button id="btn-poll" class="btn btn-secondary">Poll for Token</button>
-                    </div>
-                </fieldset>
-            </div>
+            <fieldset>
+                <legend>Target Resource</legend>
+                <select id="scope-select">
+                    <option value="openid profile {{ settings.api_a_scope }}" data-ctx="user_auth app agent">API A</option>
+                    <option value="https://graph.microsoft.com/.default" data-ctx="user_auth app agent">Microsoft Graph</option>
+                    <option value="{{ settings.api_b_app_uri }}/.default" data-ctx="user_auth app agent" data-obo="1">API A &rarr; API B (OBO)</option>
+                    <option value="https://graph.microsoft.com/.default" data-ctx="user_auth app agent" data-obo="1">API A &rarr; Graph (OBO)</option>
+                    <option value="{{ settings.api_a_app_uri }}/.default" data-ctx="client_credentials app agent">API A</option>
+                    <option value="https://graph.microsoft.com/.default" data-ctx="client_credentials app agent">Microsoft Graph</option>
+                    <option value="chain:{{ settings.api_b_app_uri }}/.default" data-ctx="client_credentials app agent">API A &rarr; API B (chain)</option>
+                    <option value="chain:https://graph.microsoft.com/.default" data-ctx="client_credentials app agent">API A &rarr; Graph (chain)</option>
+                </select>
+            </fieldset>
 
             <button id="btn-execute" class="btn btn-primary">Execute Flow</button>
         </div>
@@ -95,6 +172,7 @@
     <div class="split-view" id="split-view">
         <!-- Left: Diagram -->
         <div class="diagram-pane" id="diagram-pane">
+            <div id="diagram-header" class="diagram-header" style="display:none"></div>
             <div id="mermaid-container"></div>
         </div>
 
@@ -113,64 +191,61 @@
                 <div class="step-description" id="step-description"></div>
             </div>
 
-            <!-- Scrollable detail — all sections shown per step -->
+            <!-- Scrollable detail — tabbed view per step -->
             <div class="step-detail" id="step-detail">
                 <div class="step-detail-placeholder" id="step-placeholder">
-                    <p>Select a flow type with <strong>☰</strong> and click <strong>Execute</strong> to begin.</p>
+                    <p>Open <strong>☰</strong> to configure and run an OAuth flow.</p>
                 </div>
 
-                <section class="detail-section" id="section-request" style="display:none">
-                    <h4 class="section-heading">HTTP Request</h4>
-                    <pre id="req-display" class="code-block"></pre>
-                </section>
+                <div class="detail-tabs" id="detail-tabs" style="display:none">
+                    <div class="tab-bar" id="tab-bar">
+                        <button class="tab-btn active" data-tab="summary">Summary</button>
+                        <button class="tab-btn" data-tab="request">HTTP Request</button>
+                        <button class="tab-btn" data-tab="response">HTTP Response</button>
+                        <button class="tab-btn" data-tab="access-token">Access Token</button>
+                    </div>
 
-                <section class="detail-section" id="section-response" style="display:none">
-                    <h4 class="section-heading">HTTP Response</h4>
-                    <pre id="resp-display" class="code-block"></pre>
-                </section>
+                    <div class="tab-pane active" id="tab-summary">
+                        <div id="summary-content"></div>
+                    </div>
 
-                <section class="detail-section" id="section-access-token" style="display:none">
-                    <h4 class="section-heading">Access Token</h4>
-                    <div class="token-subsection">
-                        <h5>Decoded Header</h5>
-                        <pre id="at-header" class="code-block"></pre>
+                    <div class="tab-pane" id="tab-request">
+                        <section class="detail-section" id="section-request">
+                            <h4 class="section-heading">HTTP Request</h4>
+                            <pre id="req-display" class="code-block"></pre>
+                        </section>
+                        <div class="tab-empty" id="tab-request-empty" style="display:none">No HTTP request data for this step.</div>
                     </div>
-                    <div class="token-subsection">
-                        <h5>Decoded Payload</h5>
-                        <pre id="at-payload" class="code-block"></pre>
-                    </div>
-                    <div class="token-subsection">
-                        <h5>Raw Token</h5>
-                        <textarea id="at-raw" class="code-block raw-token" readonly></textarea>
-                    </div>
-                </section>
 
-                <section class="detail-section" id="section-id-token" style="display:none">
-                    <h4 class="section-heading">ID Token</h4>
-                    <div class="token-subsection">
-                        <h5>Decoded Header</h5>
-                        <pre id="id-header" class="code-block"></pre>
+                    <div class="tab-pane" id="tab-response">
+                        <section class="detail-section" id="section-response">
+                            <h4 class="section-heading">HTTP Response</h4>
+                            <pre id="resp-display" class="code-block"></pre>
+                        </section>
+                        <div class="tab-empty" id="tab-response-empty" style="display:none">No HTTP response data for this step.</div>
                     </div>
-                    <div class="token-subsection">
-                        <h5>Decoded Payload</h5>
-                        <pre id="id-payload" class="code-block"></pre>
-                    </div>
-                    <div class="token-subsection">
-                        <h5>Raw Token</h5>
-                        <textarea id="id-raw" class="code-block raw-token" readonly></textarea>
-                    </div>
-                </section>
 
-                <section class="detail-section" id="section-refresh-token" style="display:none">
-                    <h4 class="section-heading">Refresh Token</h4>
-                    <p id="refresh-token-note" class="hint"></p>
-                </section>
-            </div>
+                    <div class="tab-pane" id="tab-access-token">
+                        <section class="detail-section" id="section-access-token">
+                            <h4 class="section-heading">Access Token</h4>
+                            <div class="token-subsection">
+                                <h5>Decoded Header</h5>
+                                <pre id="at-header" class="code-block"></pre>
+                            </div>
+                            <div class="token-subsection">
+                                <h5>Decoded Payload</h5>
+                                <pre id="at-payload" class="code-block"></pre>
+                            </div>
+                            <div class="token-subsection">
+                                <h5>Raw Token</h5>
+                                <textarea id="at-raw" class="code-block raw-token" readonly></textarea>
+                            </div>
+                        </section>
+                        <div class="tab-empty" id="tab-access-token-empty" style="display:none">No access token for this step.</div>
+                    </div>
 
-            <!-- Highlight Legend -->
-            <div class="highlight-legend" id="highlight-legend" style="display:none">
-                <span class="legend-label">Tracked IDs:</span>
-                <div class="legend-items" id="legend-items"></div>
+
+                </div>
             </div>
         </div>
     </div>

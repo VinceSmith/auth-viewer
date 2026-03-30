@@ -72,25 +72,31 @@ test_flow("Client Credentials — API B .default", {
     "scope": f"api://{API_B_APP_ID}/.default",
 })
 
-# 4. Agent ID Autonomous → Graph
+# 4. Client Credentials Chain → API A → API B
+test_flow("Client Credentials Chain — API A → API B", {
+    "flow_type": "client_credentials_chain",
+    "scope": f"api://{API_B_APP_ID}/.default",
+})
+
+# 5. Client Credentials Chain → API A → Graph
+test_flow("Client Credentials Chain — API A → Graph", {
+    "flow_type": "client_credentials_chain",
+    "scope": "https://graph.microsoft.com/.default",
+})
+
+# 6. Agent ID Autonomous → Graph
 test_flow("Agent ID Autonomous — Graph .default", {
     "flow_type": "agent_id_autonomous",
     "scope": "https://graph.microsoft.com/.default",
 })
 
-# 5. Refresh Token (will fail if no session)
-test_flow("Refresh Token (no session)", {
-    "flow_type": "refresh_token",
-    "scope": "openid profile",
-})
-
-# 6. OBO (will fail if no session)
+# 5. OBO (will fail if no session)
 test_flow("OBO (no session)", {
     "flow_type": "obo",
     "scope": f"api://{API_B_APP_ID}/.default",
 })
 
-# 7. Agent ID OBO (will fail if no session)
+# 6. Agent ID OBO (will fail if no session)
 test_flow("Agent ID OBO (no session)", {
     "flow_type": "agent_id_obo",
     "scope": "https://graph.microsoft.com/.default",

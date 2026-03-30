@@ -35,18 +35,26 @@ def _decode_part(part: str) -> dict:
         return {"decode_error": str(e)}
 
 
+# Keys to strip from request/response bodies in the step summary.
+_HIDDEN_KEYS = {"state", "client_assertion_type"}
+
+
 def format_token_response(
     *, request_method: str, request_url: str, request_headers: dict,
     request_body: dict | str, response_status: int, response_headers: dict,
     response_body: dict,
 ) -> dict:
     """Package a token exchange request/response for the UI."""
+    display_body = (
+        {k: v for k, v in request_body.items() if k not in _HIDDEN_KEYS}
+        if isinstance(request_body, dict) else request_body
+    )
     result = {
         "request": {
             "method": request_method,
             "url": request_url,
             "headers": _sanitize_headers(request_headers),
-            "body": request_body,
+            "body": display_body,
         },
         "response": {
             "status": response_status,

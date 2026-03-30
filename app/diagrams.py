@@ -19,6 +19,7 @@ DIAGRAMS = {
     participant U as User / Browser
     participant C as Client App<br/>(auth-viewer)
     participant E as Entra ID
+    participant R as Resource API
 
     rect {_S0}
     Note right of C: Step 1 — Authorize
@@ -34,40 +35,85 @@ DIAGRAMS = {
     Note right of C: Step 2 — Token Exchange
     C->>E: POST /token<br/>(grant_type=authorization_code,<br/>code, client_secret)
     E->>C: {{ access_token, id_token,<br/>refresh_token }}
-    C->>U: Display tokens
-    end""",
-
-    "auth_code_pkce": f"""sequenceDiagram
-    participant U as User / Browser
-    participant C as Client App<br/>(public client)
-    participant E as Entra ID
-
-    rect {_S0}
-    Note right of C: Step 1 — Authorize (PKCE)
-    C->>C: Generate code_verifier<br/>+ code_challenge (S256)
-    U->>C: Click "Sign In"
-    C->>U: Redirect to /authorize
-    U->>E: GET /authorize<br/>(client_id, scope, code_challenge,<br/>code_challenge_method=S256)
-    E->>U: Login prompt + consent
-    U->>E: Credentials + consent
-    E->>U: Redirect to callback<br/>(code, state)
-    U->>C: GET /auth/callback?code=...
     end
-    rect {_S1}
-    Note right of C: Step 2 — Token Exchange
-    C->>E: POST /token<br/>(grant_type=authorization_code,<br/>code, code_verifier)<br/>No client_secret
-    E->>C: {{ access_token, id_token,<br/>refresh_token }}
-    C->>U: Display tokens
+    rect {_S2}
+    Note right of C: Step 3 — Call Resource
+    C->>R: GET /endpoint<br/>Authorization: Bearer {{access_token}}
+    R->>C: {{ response }}
     end""",
 
     "client_credentials": f"""sequenceDiagram
     participant C as Client App<br/>(auth-viewer)
     participant E as Entra ID
+    participant R as Resource API
 
     rect {_S0}
-    Note right of C: Client Credentials
+    Note right of C: Step 1 — Client Credentials
     C->>E: POST /token<br/>(grant_type=client_credentials,<br/>client_id, client_secret,<br/>scope=api://.../.default)
     E->>C: {{ access_token }}<br/>(app-only, no user context)
+    end
+    rect {_S1}
+    Note right of C: Step 2 — Call Resource
+    C->>R: GET /endpoint<br/>Authorization: Bearer {{access_token}}
+    R->>C: {{ response }}
+    end""",
+
+    "client_credentials_chain": f"""sequenceDiagram
+    participant C as Client App<br/>(auth-viewer)
+    participant E as Entra ID
+    participant A as API A<br/>(middle tier)
+    participant B as API B<br/>(downstream)
+
+    Note over C: Client Credentials Chain — app-only
+    rect {_S0}
+    Note right of C: Step 1 — Client Credentials for API A
+    C->>E: POST /token<br/>(grant_type=client_credentials,<br/>client_id, client_secret,<br/>scope=api://api-a/.default)
+    E->>C: {{ access_token }}<br/>(app-only for API A)
+    end
+    rect {_S1}
+    Note right of C: Step 2 — Call API A
+    C->>A: POST /chain<br/>Authorization: Bearer {{access_token}}
+    Note over A: API A validates token
+    end
+    rect {_S2}
+    Note right of A: Step 3 — API A → Client Credentials for API B
+    A->>E: POST /token<br/>(grant_type=client_credentials,<br/>client_id=api_a_id,<br/>client_secret=api_a_secret,<br/>scope=api://api-b/.default)
+    E->>A: {{ access_token }}<br/>(app-only for API B)
+    end
+    rect {_S3}
+    Note right of A: Step 4 — API A → Call API B
+    A->>B: GET /data<br/>Authorization: Bearer {{api_a_token}}
+    B->>A: {{ data }}
+    Note over A: API B sees API A as caller<br/>(not the original client)
+    end""",
+
+    "client_credentials_chain_graph": f"""sequenceDiagram
+    participant C as Client App<br/>(auth-viewer)
+    participant E as Entra ID
+    participant A as API A<br/>(middle tier)
+    participant G as Microsoft Graph
+
+    Note over C: Client Credentials Chain — app-only
+    rect {_S0}
+    Note right of C: Step 1 — Client Credentials for API A
+    C->>E: POST /token<br/>(grant_type=client_credentials,<br/>client_id, client_secret,<br/>scope=api://api-a/.default)
+    E->>C: {{ access_token }}<br/>(app-only for API A)
+    end
+    rect {_S1}
+    Note right of C: Step 2 — Call API A
+    C->>A: POST /chain<br/>Authorization: Bearer {{access_token}}
+    Note over A: API A validates token
+    end
+    rect {_S2}
+    Note right of A: Step 3 — API A → Client Credentials for Graph
+    A->>E: POST /token<br/>(grant_type=client_credentials,<br/>client_id=api_a_id,<br/>client_secret=api_a_secret,<br/>scope=https://graph.microsoft.com/.default)
+    E->>A: {{ access_token }}<br/>(app-only for Graph)
+    end
+    rect {_S3}
+    Note right of A: Step 4 — API A → Call Graph
+    A->>G: GET /v1.0/organization<br/>Authorization: Bearer {{api_a_token}}
+    G->>A: {{ organization data }}
+    Note over A: Graph sees API A as caller<br/>(not the original client)
     end""",
 
     "obo": f"""sequenceDiagram
@@ -104,54 +150,15 @@ DIAGRAMS = {
     E->>C: {{ access_token for API B }}
     end
     rect {_S4}
-    Note over C,E: Step 5 — Exchanged token<br/>aud switched: API A → API B
-    end
-    rect {_S5}
-    Note right of C: Step 6 — Call API B
+    Note right of C: Step 5 — Call API B
     C->>B: GET /data<br/>Authorization: Bearer {{token_B}}
     B->>C: {{ data }}
-    end""",
-
-    "device_code": f"""sequenceDiagram
-    participant U as User / Browser
-    participant C as Client App
-    participant D as Other Device<br/>(phone/laptop)
-    participant E as Entra ID
-
-    rect {_S0}
-    Note right of C: Step 1 — Request Device Code
-    C->>E: POST /devicecode<br/>(client_id, scope)
-    E->>C: {{ user_code, device_code,<br/>verification_uri }}
-    C->>U: Display: "Go to<br/>microsoft.com/devicelogin<br/>and enter code: ABCD-EFGH"
-    end
-    rect {_S1}
-    Note right of C: Step 2 — Poll for Token
-    D->>E: User navigates to<br/>verification_uri
-    D->>E: Enters user_code
-    D->>E: Authenticates + consents
-    loop Poll every 5s
-        C->>E: POST /token<br/>(grant_type=device_code,<br/>device_code)
-        E->>C: authorization_pending
-    end
-    C->>E: POST /token<br/>(grant_type=device_code)
-    E->>C: {{ access_token, id_token,<br/>refresh_token }}
-    C->>U: Display tokens
-    end""",
-
-    "refresh_token": f"""sequenceDiagram
-    participant C as Client App<br/>(auth-viewer)
-    participant E as Entra ID
-
-    rect {_S0}
-    Note over C: Has refresh_token<br/>from prior auth
-    C->>E: POST /token<br/>(grant_type=refresh_token,<br/>refresh_token, client_secret,<br/>scope)
-    E->>C: {{ new access_token,<br/>new id_token,<br/>new refresh_token }}
     end""",
 
     "agent_id_autonomous": f"""sequenceDiagram
     participant C as Client App
     participant E as Entra ID
-    participant G as Target Resource<br/>(e.g. Graph)
+    participant R as Resource API
 
     Note over C: Agent ID — Autonomous (app-only)
     rect {_S0}
@@ -160,17 +167,22 @@ DIAGRAMS = {
     E->>C: {{ parent_token }}<br/>(aud: api://AzureADTokenExchange)
     end
     rect {_S1}
-    Note right of C: Step 2 — Token Exchange
-    C->>E: POST /token<br/>(grant_type=client_credentials,<br/>client_id=agent_identity_id,<br/>client_assertion=parent_token,<br/>scope=https://graph.microsoft.com/.default)
+    Note right of C: Step 2 \u2014 FMI Exchange
+    C->>E: POST /token<br/>(grant_type=client_credentials,<br/>client_id=agent_identity_id,<br/>client_assertion=parent_token,<br/>scope=resource/.default)
     E->>C: {{ access_token }}<br/>(sub: agent_identity)
     end
-    C->>G: API call with access_token""",
+    rect {_S2}
+    Note right of C: Step 3 — Call Resource
+    C->>R: GET /endpoint<br/>Authorization: Bearer {{access_token}}
+    R->>C: {{ response }}
+    end""",
 
     "agent_id_obo": f"""sequenceDiagram
     participant U as User / Browser
     participant C as Client App
+    participant A as API A<br/>(middle tier)
     participant E as Entra ID
-    participant G as Target Resource<br/>(e.g. Graph)
+    participant B as API B<br/>(downstream)
 
     Note over C: Agent ID — OBO (delegated)
     rect {_S0}
@@ -194,65 +206,47 @@ DIAGRAMS = {
     E->>C: {{ parent_token }}
     end
     rect {_S3}
-    Note right of C: Step 4 — OBO Exchange
-    C->>E: POST /token<br/>(grant_type=jwt-bearer,<br/>client_id=agent_identity_id,<br/>client_assertion=parent_token,<br/>assertion=user_token,<br/>requested_token_use=on_behalf_of,<br/>scope=https://graph.microsoft.com/.default)
-    E->>C: {{ access_token }}<br/>(sub: agent_identity, upn: user)
-    end
-    C->>G: API call on behalf of user""",
-
-    # ── Shortened diagrams for "reuse stored token" mode ──
-
-    "obo_reuse": f"""sequenceDiagram
-    participant C as Client App<br/>(auth-viewer)
-    participant A as API A<br/>(middle tier)
-    participant E as Entra ID
-    participant B as API B<br/>(downstream)
-
-    Note over C: OBO — Using stored token
-    rect {_S0}
-    Note right of C: Step 1 — Stored User Token
-    Note over C: Access token from<br/>prior sign-in (session)
-    end
-    rect {_S1}
-    Note right of C: Step 2 — Call API A
-    C->>A: GET /me<br/>Authorization: Bearer {{token_A}}
-    A->>C: {{ claims }}
-    end
-    rect {_S2}
-    Note right of C: Step 3 — OBO Exchange
-    C->>E: POST /token<br/>(grant_type=jwt-bearer,<br/>assertion={{token_A}},<br/>client_id=api_a_app_id,<br/>scope=api://api-b/.default)
-    E->>C: {{ access_token for API B }}
-    end
-    rect {_S3}
-    Note over C,E: Step 4 — Exchanged token<br/>aud switched: API A → API B
+    Note right of C: Step 4 — Agent OBO Exchange
+    C->>E: POST /token<br/>(grant_type=jwt-bearer,<br/>client_id=agent_identity_id,<br/>client_assertion=parent_token,<br/>assertion=user_token,<br/>scope=api://api-a/access_as_user)
+    E->>C: {{ agent_token_A }}<br/>(sub: agent, upn: user, aud: API A)
     end
     rect {_S4}
-    Note right of C: Step 5 — Call API B
+    Note right of C: Step 5 — Call API A
+    C->>A: GET /me<br/>Authorization: Bearer {{agent_token_A}}
+    A->>C: {{ claims }}
+    end
+    rect {_S5}
+    Note right of C: Step 6 — OBO Exchange (API A → API B)
+    C->>E: POST /token<br/>(grant_type=jwt-bearer,<br/>assertion={{agent_token_A}},<br/>client_id=api_a_app_id,<br/>scope=api://api-b/.default)
+    E->>C: {{ token_B }}
+    end
+    rect rgb(45,45,60)
+    Note right of C: Step 7 — Call API B
     C->>B: GET /data<br/>Authorization: Bearer {{token_B}}
     B->>C: {{ data }}
     end""",
 
-    "agent_id_obo_reuse": f"""sequenceDiagram
-    participant C as Client App
+    "profile_login": f"""sequenceDiagram
+    participant U as User / Browser
+    participant C as Client App<br/>(auth-viewer)
     participant E as Entra ID
-    participant G as Target Resource<br/>(e.g. Graph)
 
-    Note over C: Agent ID OBO — Using stored token
+    Note over C: Sign-In — Acquire ID Token
     rect {_S0}
-    Note right of C: Step 1 — Stored User Token
-    Note over C: User token from<br/>prior sign-in (session)
+    Note right of C: Step 1 — Authorize
+    U->>C: Open app
+    C->>U: Redirect to /authorize
+    U->>E: GET /authorize<br/>(scope=openid profile)
+    E->>U: Login prompt
+    U->>E: Credentials
+    E->>U: Redirect to callback<br/>(code, state)
+    U->>C: GET /auth/callback?code=...&state=...
     end
     rect {_S1}
-    Note right of C: Step 2 — Parent Token
-    C->>E: POST /token<br/>(grant_type=client_credentials,<br/>client_id=blueprint_app_id,<br/>client_secret=blueprint_secret,<br/>scope=api://AzureADTokenExchange/.default,<br/>fmi_path=agent_identity_id)
-    E->>C: {{ parent_token }}
-    end
-    rect {_S2}
-    Note right of C: Step 3 — OBO Exchange
-    C->>E: POST /token<br/>(grant_type=jwt-bearer,<br/>client_id=agent_identity_id,<br/>client_assertion=parent_token,<br/>assertion=user_token,<br/>scope=https://graph.microsoft.com/.default)
-    E->>C: {{ access_token }}<br/>(sub: agent_identity, upn: user)
-    end
-    C->>G: API call on behalf of user""",
+    Note right of C: Step 2 — Token Exchange
+    C->>E: POST /token<br/>(grant_type=authorization_code,<br/>code, client_secret)
+    E->>C: {{{{ id_token }}}}
+    end""",
 }
 
 

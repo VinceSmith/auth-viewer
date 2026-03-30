@@ -194,6 +194,54 @@ Write-Host "Blueprint access_as_user consent granted to client" -ForegroundColor
 
 
 # ══════════════════════════════════════════════════════════════════
+# 5b. Grant agent identity delegated consent on API A and API B
+#     Required for Agent ID OBO flows targeting these resource APIs
+# ══════════════════════════════════════════════════════════════════
+Write-Host "`n=== Granting agent identity consent on API A and API B ===" -ForegroundColor Yellow
+
+$ApiAAppId = $envVars["API_A_APP_ID"]
+$ApiBAppId = $envVars["API_B_APP_ID"]
+
+if ($ApiAAppId) {
+    $apiASpId = (az ad sp show --id $ApiAAppId --query id -o tsv 2>$null)
+    if ($apiASpId) {
+        $grantA = @{
+            clientId    = $agentSpObjectId
+            consentType = "AllPrincipals"
+            resourceId  = $apiASpId
+            scope       = "access_as_user"
+        } | ConvertTo-Json -Depth 3
+        $bodyFile = "$env:TEMP\auth-viewer-agent-grant-a.json"
+        $grantA | Set-Content $bodyFile -Encoding UTF8
+        az rest --method POST `
+            --url "https://graph.microsoft.com/v1.0/oauth2PermissionGrants" `
+            --headers "Content-Type=application/json" `
+            --body "@$bodyFile" 2>$null
+        Write-Host "API A access_as_user consent granted to agent" -ForegroundColor Green
+    }
+}
+
+if ($ApiBAppId) {
+    $apiBSpId = (az ad sp show --id $ApiBAppId --query id -o tsv 2>$null)
+    if ($apiBSpId) {
+        $grantB = @{
+            clientId    = $agentSpObjectId
+            consentType = "AllPrincipals"
+            resourceId  = $apiBSpId
+            scope       = "read"
+        } | ConvertTo-Json -Depth 3
+        $bodyFile = "$env:TEMP\auth-viewer-agent-grant-b.json"
+        $grantB | Set-Content $bodyFile -Encoding UTF8
+        az rest --method POST `
+            --url "https://graph.microsoft.com/v1.0/oauth2PermissionGrants" `
+            --headers "Content-Type=application/json" `
+            --body "@$bodyFile" 2>$null
+        Write-Host "API B read consent granted to agent" -ForegroundColor Green
+    }
+}
+
+
+# ══════════════════════════════════════════════════════════════════
 # 6. Update .env with Agent ID values
 # ══════════════════════════════════════════════════════════════════
 Write-Host "`n=== Updating $EnvFile ===" -ForegroundColor Yellow

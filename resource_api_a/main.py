@@ -127,6 +127,62 @@ async def obo_chain(authorization: str = Header("")):
     }
 
 
+@app.post("/chain")
+async def cc_chain(authorization: str = Header(""), target_scope: str = "", target_url: str = ""):
+    """Receive an app-only token, then do own client_credentials grant for a downstream resource."""
+    token = extract_bearer(authorization)
+    claims = await validate_token(token)
+
+    # Determine downstream scope and URL (default to API B)
+    downstream_scope = target_scope or (API_B_SCOPE.rsplit("/", 1)[0] + "/.default" if "/" in API_B_SCOPE else API_B_SCOPE)
+    downstream_url = target_url or f"{API_B_BASE_URL}/data"
+
+    # API A does its own client_credentials grant for the downstream resource
+    token_endpoint = f"https://login.microsoftonline.com/{TENANT_ID}/oauth2/v2.0/token"
+    cc_params = {
+        "client_id": API_A_APP_ID,
+        "client_secret": API_A_CLIENT_SECRET,
+        "grant_type": "client_credentials",
+        "scope": downstream_scope,
+    }
+
+    async with httpx.AsyncClient() as client:
+        cc_resp = await client.post(
+            token_endpoint,
+            data=cc_params,
+            headers={"Content-Type": "application/x-www-form-urlencoded"},
+        )
+        cc_result = cc_resp.json()
+
+    if "access_token" not in cc_result:
+        return {
+            "error": "Client credentials grant for downstream failed",
+            "cc_request": {k: v for k, v in cc_params.items() if k != "client_secret"},
+            "cc_response": cc_result,
+        }
+
+    # Call downstream with API A's own app-only token
+    downstream_token = cc_result["access_token"]
+    async with httpx.AsyncClient() as client:
+        downstream_resp = await client.get(
+            downstream_url,
+            headers={"Authorization": f"Bearer {downstream_token}"},
+        )
+        try:
+            downstream_result = downstream_resp.json()
+        except Exception:
+            downstream_result = {"raw": downstream_resp.text}
+
+    return {
+        "message": "Hello from API A",
+        "original_claims": claims,
+        "cc_request": {k: v for k, v in cc_params.items() if k != "client_secret"},
+        "cc_token_response": {k: v for k, v in cc_result.items() if k != "access_token"},
+        "downstream_url": downstream_url,
+        "downstream_response": downstream_result,
+    }
+
+
 @app.get("/health")
 async def health():
     return {"status": "ok", "service": "api-a"}

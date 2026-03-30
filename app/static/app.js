@@ -1,7 +1,8 @@
 /* ── Entra OAuth Explorer — Frontend Logic ── */
 
 // ── State ──
-let currentFlowType = 'auth_code';
+let authCategory = 'user_auth';   // 'user_auth' | 'client_credentials'
+let clientType = 'app';            // 'app' | 'agent'
 let diagramCounter = 0;
 let currentSteps = [];
 let currentStepIndex = 0;
@@ -16,6 +17,8 @@ const STEP_FILLS = [
     [30, 55, 55],
     [55, 30, 55],
     [55, 55, 25],
+    [45, 45, 60],
+    [60, 40, 30],
 ];
 
 // JWT claim descriptions for hover tooltips
@@ -82,10 +85,10 @@ const CLAIM_DESCRIPTIONS = {
 };
 
 // ── DOM refs ──
-const flowRadios = document.querySelectorAll('input[name="flow_type"]');
 const scopeSelect = document.getElementById('scope-select');
 const btnExecute = document.getElementById('btn-execute');
 const mermaidContainer = document.getElementById('mermaid-container');
+const diagramHeader = document.getElementById('diagram-header');
 
 // Flyout
 const flyoutPanel = document.getElementById('flyout-panel');
@@ -93,29 +96,30 @@ const flyoutBackdrop = document.getElementById('flyout-backdrop');
 const btnFlyout = document.getElementById('btn-flyout');
 const btnFlyoutClose = document.getElementById('btn-flyout-close');
 
+// Composite controls
+const authCategoryRadios = document.querySelectorAll('input[name="auth_category"]');
+const clientTypeRadios = document.querySelectorAll('input[name="client_type"]');
+const reuseIdCheckbox = document.getElementById('reuse-id-token');
+const reuseIdLabel = document.getElementById('reuse-id-label');
+
 // Step timeline
 const stepTimeline = document.getElementById('step-timeline');
 const stepPills = document.getElementById('step-pills');
 const stepDescription = document.getElementById('step-description');
 const btnStepPrev = document.getElementById('btn-step-prev');
 const btnStepNext = document.getElementById('btn-step-next');
-const highlightLegend = document.getElementById('highlight-legend');
-const legendItems = document.getElementById('legend-items');
+
 
 // Detail sections
 const stepPlaceholder = document.getElementById('step-placeholder');
+const detailTabs = document.getElementById('detail-tabs');
+const tabBar = document.getElementById('tab-bar');
+const summaryContent = document.getElementById('summary-content');
 const sectionRequest = document.getElementById('section-request');
 const sectionResponse = document.getElementById('section-response');
 const sectionAccessToken = document.getElementById('section-access-token');
-const sectionIdToken = document.getElementById('section-id-token');
 
-// Flow-specific panels
-const oboOptions = document.getElementById('obo-options');
-const agentOboOptions = document.getElementById('agent-obo-options');
-const deviceCodeOptions = document.getElementById('device-code-options');
-const deviceCodeInfo = document.getElementById('device-code-info');
-const deviceCodeInstructions = document.getElementById('device-code-instructions');
-const sectionRefreshToken = document.getElementById('section-refresh-token');
+let activeTab = 'summary';
 
 
 // ══════════════════════════════════════════════════════════════════════════
@@ -151,117 +155,129 @@ async function loadHighlights() {
     try {
         const resp = await fetch('/api/highlights');
         highlightMap = await resp.json();
-        buildLegend();
     } catch { /* ignore */ }
 }
 
-function buildLegend() {
-    legendItems.innerHTML = '';
-    for (const [guid, info] of Object.entries(highlightMap)) {
-        const item = document.createElement('span');
-        item.className = 'legend-item';
-        item.style.borderColor = info.color;
-        item.style.color = info.color;
-        item.textContent = info.label;
-        item.title = guid;
-        legendItems.appendChild(item);
-    }
+
+// ══════════════════════════════════════════════════════════════════════════
+// ── COMPOSITE FLOW SELECTION ──
+// ══════════════════════════════════════════════════════════════════════════
+
+// Derive the internal flow_type from the three composite controls
+function isOboScope() {
+    const opt = scopeSelect.options[scopeSelect.selectedIndex];
+    return opt?.dataset.obo === '1';
 }
 
-
-// ══════════════════════════════════════════════════════════════════════════
-// ── FLOW TYPE & SCOPE ──
-// ══════════════════════════════════════════════════════════════════════════
-
-flowRadios.forEach(radio => {
-    radio.addEventListener('change', (e) => {
-        currentFlowType = e.target.value;
-        updateFlowUI();
-        loadDiagram(getDiagramKey());
-    });
-});
-
-function updateFlowUI() {
-    oboOptions.style.display = 'none';
-    agentOboOptions.style.display = 'none';
-    deviceCodeOptions.style.display = 'none';
-    deviceCodeInfo.style.display = 'none';
-
-    if (currentFlowType === 'obo') {
-        oboOptions.style.display = 'block';
-    } else if (currentFlowType === 'agent_id_obo') {
-        agentOboOptions.style.display = 'block';
-    } else if (currentFlowType === 'device_code') {
-        deviceCodeOptions.style.display = 'block';
+function getEffectiveFlowType() {
+    if (authCategory === 'client_credentials') {
+        if (clientType === 'agent') return 'agent_id_autonomous';
+        const scope = getScope();
+        if (scope.startsWith('chain:')) return 'client_credentials_chain';
+        return 'client_credentials';
     }
+    // user_auth
+    const obo = isOboScope();
+    if (clientType === 'agent') return obo ? 'agent_id_obo' : 'agent_id_obo';
+    return obo ? 'obo' : 'auth_code';
+}
 
-    // Filter scope options by flow type
-    let firstVisible = null;
-    let currentStillVisible = false;
-    for (const opt of scopeSelect.options) {
-        const flows = (opt.dataset.flows || '').split(' ');
-        const show = flows.includes(currentFlowType);
-        opt.hidden = !show;
-        if (show && !firstVisible) firstVisible = opt;
-        if (show && opt.selected) currentStillVisible = true;
+function getDiagramKey() {
+    const ft = getEffectiveFlowType();
+    if (ft === 'client_credentials_chain') {
+        const scope = getScope();
+        if (scope.includes('graph.microsoft.com')) return 'client_credentials_chain_graph';
     }
-    if (!currentStillVisible && firstVisible) firstVisible.selected = true;
-
-    if (currentFlowType === 'auth_code' || currentFlowType === 'auth_code_pkce') {
-        btnExecute.textContent = 'Sign In (Redirect)';
-    } else if (currentFlowType === 'obo') {
-        const mode = document.querySelector('input[name="obo_mode"]:checked')?.value || 'new';
-        btnExecute.textContent = mode === 'reuse' ? 'Execute Flow' : 'Sign In (Redirect)';
-    } else if (currentFlowType === 'agent_id_obo') {
-        const mode = document.querySelector('input[name="agent_obo_mode"]:checked')?.value || 'new';
-        btnExecute.textContent = mode === 'reuse' ? 'Execute Flow' : 'Sign In (Redirect)';
-    } else if (currentFlowType === 'device_code') {
-        btnExecute.textContent = 'Start Device Code Flow';
-    } else {
-        btnExecute.textContent = 'Execute Flow';
-    }
+    return ft;
 }
 
 function getScope() {
     return scopeSelect.value;
 }
 
-// Helper: get the effective diagram key for the current flow + mode
-function getDiagramKey() {
-    if (currentFlowType === 'obo') {
-        const mode = document.querySelector('input[name="obo_mode"]:checked')?.value || 'new';
-        return mode === 'reuse' ? 'obo_reuse' : 'obo';
+function updateFlowUI() {
+    const isUserAuth = authCategory === 'user_auth';
+
+    // Client type: always enabled (no locking)
+    for (const radio of clientTypeRadios) {
+        radio.disabled = false;
     }
-    if (currentFlowType === 'agent_id_obo') {
-        const mode = document.querySelector('input[name="agent_obo_mode"]:checked')?.value || 'new';
-        return mode === 'reuse' ? 'agent_id_obo_reuse' : 'agent_id_obo';
+
+    // Stored ID token option: show for user_auth only
+    reuseIdLabel.style.display = isUserAuth ? '' : 'none';
+
+    // Filter scope options by context
+    let firstVisible = null;
+    let currentStillVisible = false;
+    for (const opt of scopeSelect.options) {
+        const ctx = (opt.dataset.ctx || '').split(' ');
+        let show = false;
+        if (authCategory === 'client_credentials') {
+            show = ctx.includes('client_credentials') && (clientType === 'agent' ? ctx.includes('agent') : ctx.includes('app'));
+        } else {
+            show = ctx.includes('user_auth') && ctx.includes(clientType);
+        }
+        opt.hidden = !show;
+        if (show && !firstVisible) firstVisible = opt;
+        if (show && opt.selected) currentStillVisible = true;
     }
-    return currentFlowType;
+    if (!currentStillVisible && firstVisible) firstVisible.selected = true;
+
+    // Button text
+    if (isUserAuth && !reuseIdCheckbox?.checked) {
+        btnExecute.textContent = 'Sign In & Execute';
+    } else {
+        btnExecute.textContent = 'Execute Flow';
+    }
 }
 
-// OBO/Agent OBO mode toggle handlers
-document.querySelectorAll('input[name="obo_mode"]').forEach(radio => {
+// Event listeners for composite controls
+authCategoryRadios.forEach(radio => {
     radio.addEventListener('change', () => {
-        const reuse = radio.value === 'reuse';
-        document.getElementById('obo-reuse-hint').style.display = reuse ? 'block' : 'none';
+        authCategory = radio.value;
+        setSteps([]);  // clear stale results from previous flow
         updateFlowUI();
         loadDiagram(getDiagramKey());
     });
 });
 
-document.querySelectorAll('input[name="agent_obo_mode"]').forEach(radio => {
+clientTypeRadios.forEach(radio => {
     radio.addEventListener('change', () => {
-        const reuse = radio.value === 'reuse';
-        document.getElementById('agent-obo-reuse-hint').style.display = reuse ? 'block' : 'none';
+        clientType = radio.value;
+        setSteps([]);  // clear stale results from previous flow
         updateFlowUI();
+        updateSessionStatus();
         loadDiagram(getDiagramKey());
     });
+});
+
+scopeSelect.addEventListener('change', () => {
+    setSteps([]);
+    updateFlowUI();
+    updateSessionStatus();
+    loadDiagram(getDiagramKey());
+});
+
+reuseIdCheckbox?.addEventListener('change', () => {
+    setSteps([]);
+    updateFlowUI();
+    updateSessionStatus();
+    loadDiagram(getDiagramKey());
 });
 
 
 // ══════════════════════════════════════════════════════════════════════════
 // ── MERMAID DIAGRAM ──
 // ══════════════════════════════════════════════════════════════════════════
+
+function updateDiagramHeader() {
+    const grantLabel = authCategory === 'user_auth' ? 'User Auth Flow' : 'Client Credentials Flow';
+    const clientLabel = clientType === 'agent' ? 'Agent' : 'App';
+    const selected = scopeSelect.options[scopeSelect.selectedIndex];
+    const targetLabel = selected ? selected.textContent.trim() : '';
+    diagramHeader.textContent = `Grant Type: ${grantLabel},  Client Type: ${clientLabel},  Target Resource: ${targetLabel}`;
+    diagramHeader.style.display = '';
+}
 
 async function loadDiagram(flowType) {
     try {
@@ -358,13 +374,14 @@ function setSteps(steps) {
 
     if (currentSteps.length === 0) {
         stepTimeline.style.display = 'none';
-        highlightLegend.style.display = 'none';
+        detailTabs.style.display = 'none';
+        stepPlaceholder.style.display = 'block';
         clearDiagramHighlight();
         return;
     }
 
     stepTimeline.style.display = 'block';
-    highlightLegend.style.display = 'flex';
+    activeTab = 'summary';
     renderStepPills();
     showStep(0);
 }
@@ -413,62 +430,75 @@ function showStep(index) {
 
 function populateStepDetail(step) {
     stepPlaceholder.style.display = 'none';
+    detailTabs.style.display = 'flex';
 
-    // Request
     const req = step.request;
-    if (req) {
+    const resp = step.response;
+    const tokens = step.tokens || {};
+
+    const hasRequest = !!req;
+    const hasResponse = !!resp;
+    const hasAccessToken = !!tokens.access_token;
+
+    // ID token: carry forward from earlier steps if current step doesn't have one
+    let idToken = tokens.id_token || null;
+    if (!idToken) {
+        for (let i = currentStepIndex - 1; i >= 0; i--) {
+            const prev = currentSteps[i]?.tokens?.id_token;
+            if (prev) { idToken = prev; break; }
+        }
+    }
+    const hasIdToken = !!idToken;
+
+    // Populate request tab
+    if (hasRequest) {
         sectionRequest.style.display = 'block';
+        document.getElementById('tab-request-empty').style.display = 'none';
         const reqText = `${req.method} ${req.url}\n\nHeaders:\n${formatJson(req.headers)}\n\nBody:\n${formatJson(req.body)}`;
         setHighlightedHtml('req-display', reqText);
     } else {
         sectionRequest.style.display = 'none';
+        document.getElementById('tab-request-empty').style.display = 'block';
     }
 
-    // Response
-    const resp = step.response;
-    if (resp) {
+    // Populate response tab
+    if (hasResponse) {
         sectionResponse.style.display = 'block';
+        document.getElementById('tab-response-empty').style.display = 'none';
         const respText = `Status: ${resp.status}\n\nHeaders:\n${formatJson(resp.headers)}\n\nBody:\n${formatJson(resp.body)}`;
         setHighlightedHtml('resp-display', respText);
     } else {
         sectionResponse.style.display = 'none';
+        document.getElementById('tab-response-empty').style.display = 'block';
     }
 
-    // Access Token
-    const tokens = step.tokens || {};
-    if (tokens.access_token) {
+    // Populate access token tab
+    if (hasAccessToken) {
         sectionAccessToken.style.display = 'block';
+        document.getElementById('tab-access-token-empty').style.display = 'none';
         setHighlightedHtml('at-header', formatJson(tokens.access_token.header));
         setHighlightedHtml('at-payload', formatJson(tokens.access_token.payload));
         document.getElementById('at-raw').value = tokens.access_token.raw || '';
     } else {
         sectionAccessToken.style.display = 'none';
+        document.getElementById('tab-access-token-empty').style.display = 'block';
     }
 
-    // ID Token
-    if (tokens.id_token) {
-        sectionIdToken.style.display = 'block';
-        setHighlightedHtml('id-header', formatJson(tokens.id_token.header));
-        setHighlightedHtml('id-payload', formatJson(tokens.id_token.payload));
-        document.getElementById('id-raw').value = tokens.id_token.raw || '';
-    } else {
-        sectionIdToken.style.display = 'none';
-    }
+    // Update tab badges (dim tabs with no data)
+    tabBar.querySelectorAll('.tab-btn').forEach(btn => {
+        const tab = btn.dataset.tab;
+        let hasData = true;
+        if (tab === 'request') hasData = hasRequest;
+        else if (tab === 'response') hasData = hasResponse;
+        else if (tab === 'access-token') hasData = hasAccessToken;
+        btn.classList.toggle('tab-no-data', !hasData);
+    });
 
-    // Refresh Token presence
-    if (tokens.refresh_token) {
-        sectionRefreshToken.style.display = 'block';
-        document.getElementById('refresh-token-note').textContent =
-            '✓ Refresh token present — opaque to clients (not meant for introspection).';
-    } else {
-        sectionRefreshToken.style.display = 'none';
-    }
+    // Build summary tab
+    buildSummary(step, idToken);
 
-    // If nothing is shown (display-only step with just description), show a note
-    if (!req && !resp && !tokens.access_token && !tokens.id_token) {
-        sectionRequest.style.display = 'block';
-        setText('req-display', 'Display-only step — see the description above.');
-    }
+    // Keep current tab selection
+    switchTab(activeTab);
 }
 
 // Step navigation
@@ -503,15 +533,6 @@ function highlightText(text) {
         }
         return match;
     });
-    // Color-code tracked IDs
-    for (const [value, info] of Object.entries(highlightMap)) {
-        if (!value) continue;
-        const escaped = value.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
-        const re = new RegExp(escaped, 'g');
-        html = html.replace(re,
-            `<span class="hl" style="color:${info.color};background:${info.color}20;border-bottom:2px solid ${info.color}" title="${escapeHtml(info.label)}">${escapeHtml(value)}</span>`
-        );
-    }
     return html;
 }
 
@@ -525,39 +546,23 @@ function setHighlightedHtml(id, text) {
 // ══════════════════════════════════════════════════════════════════════════
 
 btnExecute.addEventListener('click', async () => {
-    const flowType = currentFlowType;
+    const flowType = getEffectiveFlowType();
     const scope = getScope();
 
     // Close flyout on execute
     closeFlyout();
 
-    if (flowType === 'auth_code') {
-        window.location.href = `/auth/login?scope=${encodeURIComponent(scope)}&prompt=login`;
-        return;
-    }
-    if (flowType === 'auth_code_pkce') {
-        window.location.href = `/auth/login?scope=${encodeURIComponent(scope)}&use_pkce=true&prompt=login`;
-        return;
-    }
-    if (flowType === 'obo') {
-        const mode = document.querySelector('input[name="obo_mode"]:checked')?.value || 'new';
-        if (mode === 'new') {
-            window.location.href = `/auth/login?flow_type=obo&target_scope=${encodeURIComponent(scope)}&prompt=login`;
-            return;
+    // Update diagram header with current config
+    updateDiagramHeader();
+
+    // User auth flows — always redirect (get fresh access token)
+    if (authCategory === 'user_auth') {
+        const promptParam = reuseIdCheckbox?.checked ? '' : '&prompt=login';
+        if (isOboScope()) {
+            window.location.href = `/auth/login?flow_type=${flowType}&target_scope=${encodeURIComponent(scope)}${promptParam}`;
+        } else {
+            window.location.href = `/auth/login?scope=${encodeURIComponent(scope)}${promptParam}`;
         }
-        // Reuse mode — fall through to API execute below
-    }
-    if (flowType === 'agent_id_obo') {
-        const mode = document.querySelector('input[name="agent_obo_mode"]:checked')?.value || 'new';
-        if (mode === 'new') {
-            window.location.href = `/auth/login?flow_type=agent_id_obo&target_scope=${encodeURIComponent(scope)}&prompt=login`;
-            return;
-        }
-        // Reuse mode — fall through to API execute below
-    }
-    if (flowType === 'device_code') {
-        openFlyout(); // keep flyout open for device code instructions
-        await executeDeviceCodeStart(scope);
         return;
     }
 
@@ -565,7 +570,8 @@ btnExecute.addEventListener('click', async () => {
     btnExecute.textContent = 'Executing...';
 
     try {
-        const payload = { flow_type: flowType, scope: scope };
+        const apiScope = scope.startsWith('chain:') ? scope.slice(6) : scope;
+        const payload = { flow_type: flowType, scope: apiScope };
         const resp = await fetch('/api/execute', {
             method: 'POST',
             headers: { 'Content-Type': 'application/json' },
@@ -574,7 +580,13 @@ btnExecute.addEventListener('click', async () => {
         const data = await resp.json();
 
         if (data.error) {
-            showError(data.error);
+            setSteps([]);  // clear stale results from previous flow
+            await loadDiagram(getDiagramKey());
+            if (data.error === 'token_expired') {
+                showTokenExpiredError(data.message || 'Your access token has expired. Please sign in again.');
+            } else {
+                showError(data.message || data.error);
+            }
             return;
         }
 
@@ -601,90 +613,6 @@ btnExecute.addEventListener('click', async () => {
 });
 
 
-// ── Device Code flow ──
-async function executeDeviceCodeStart(scope) {
-    btnExecute.disabled = true;
-    btnExecute.textContent = 'Starting...';
-
-    try {
-        const resp = await fetch('/api/execute', {
-            method: 'POST',
-            headers: { 'Content-Type': 'application/json' },
-            body: JSON.stringify({ flow_type: 'device_code_start', scope }),
-        });
-        const data = await resp.json();
-
-        if (data.error) {
-            showError(data.error);
-            return;
-        }
-
-        const body = data.result?.response?.body;
-        if (body?.verification_uri && body?.user_code) {
-            deviceCodeInfo.style.display = 'block';
-            deviceCodeInstructions.style.display = 'none';
-            document.getElementById('device-code-url').href = body.verification_uri;
-            document.getElementById('device-code-url').textContent = body.verification_uri;
-            document.getElementById('device-code-value').textContent = body.user_code;
-        }
-
-        const result = data.result;
-        if (result && result.steps) {
-            setSteps(result.steps);
-        } else {
-            displayResultLegacy(result, 'device_code');
-        }
-        if (data.diagram) await renderMermaid(data.diagram);
-
-        const btnPoll = document.getElementById('btn-poll');
-        btnPoll.onclick = async () => {
-            closeFlyout();
-            btnPoll.disabled = true;
-            btnPoll.textContent = 'Polling...';
-            try {
-                const pollResp = await fetch('/api/execute', {
-                    method: 'POST',
-                    headers: { 'Content-Type': 'application/json' },
-                    body: JSON.stringify({ flow_type: 'device_code_poll', device_code: body.device_code }),
-                });
-                const pollData = await pollResp.json();
-                const pollResult = pollData.result;
-                if (pollResult && pollResult.steps) {
-                    setSteps(pollResult.steps);
-                } else {
-                    displayResultLegacy(pollResult, 'device_code');
-                }
-                updateSessionStatus();
-
-                // Refresh highlights (may discover new subjects)
-                await loadHighlights();
-                if (currentSteps.length > 0) showStep(currentStepIndex);
-
-                const pollBody = pollResult?.response?.body;
-                if (pollBody?.error === 'authorization_pending') {
-                    btnPoll.textContent = 'Poll Again (pending...)';
-                    btnPoll.disabled = false;
-                } else if (pollBody?.access_token) {
-                    btnPoll.textContent = 'Token Acquired!';
-                } else {
-                    btnPoll.textContent = 'Poll for Token';
-                    btnPoll.disabled = false;
-                }
-            } catch (err) {
-                showError(err.message);
-                btnPoll.textContent = 'Poll for Token';
-                btnPoll.disabled = false;
-            }
-        };
-    } catch (err) {
-        showError(err.message);
-    } finally {
-        btnExecute.disabled = false;
-        btnExecute.textContent = 'Start Device Code Flow';
-    }
-}
-
-
 // ══════════════════════════════════════════════════════════════════════════
 // ── LEGACY DISPLAY (fallback when no steps array) ──
 // ══════════════════════════════════════════════════════════════════════════
@@ -694,53 +622,15 @@ function displayResultLegacy(result, flowType) {
     stepTimeline.style.display = 'none';
     currentSteps = [];
     clearDiagramHighlight();
-    stepPlaceholder.style.display = 'none';
 
-    const tokens = result.tokens || {};
-
-    if (tokens.access_token) {
-        sectionAccessToken.style.display = 'block';
-        setHighlightedHtml('at-header', formatJson(tokens.access_token.header));
-        setHighlightedHtml('at-payload', formatJson(tokens.access_token.payload));
-        document.getElementById('at-raw').value = tokens.access_token.raw || '';
-    } else {
-        sectionAccessToken.style.display = 'none';
-    }
-
-    if (tokens.id_token) {
-        sectionIdToken.style.display = 'block';
-        setHighlightedHtml('id-header', formatJson(tokens.id_token.header));
-        setHighlightedHtml('id-payload', formatJson(tokens.id_token.payload));
-        document.getElementById('id-raw').value = tokens.id_token.raw || '';
-    } else {
-        sectionIdToken.style.display = 'none';
-    }
-
-    if (tokens.refresh_token) {
-        sectionRefreshToken.style.display = 'block';
-        document.getElementById('refresh-token-note').textContent =
-            '✓ Refresh token present — opaque to clients (not meant for introspection).';
-    } else {
-        sectionRefreshToken.style.display = 'none';
-    }
-
-    const req = result.request;
-    if (req) {
-        sectionRequest.style.display = 'block';
-        const reqText = `${req.method} ${req.url}\n\nHeaders:\n${formatJson(req.headers)}\n\nBody:\n${formatJson(req.body)}`;
-        setHighlightedHtml('req-display', reqText);
-    } else {
-        sectionRequest.style.display = 'none';
-    }
-
-    const resp = result.response;
-    if (resp) {
-        sectionResponse.style.display = 'block';
-        const respText = `Status: ${resp.status}\n\nHeaders:\n${formatJson(resp.headers)}\n\nBody:\n${formatJson(resp.body)}`;
-        setHighlightedHtml('resp-display', respText);
-    } else {
-        sectionResponse.style.display = 'none';
-    }
+    // Build a pseudo-step from the legacy result
+    const step = {
+        label: flowType,
+        request: result.request || null,
+        response: result.response || null,
+        tokens: result.tokens || {},
+    };
+    populateStepDetail(step);
 }
 
 
@@ -750,14 +640,28 @@ async function updateSessionStatus() {
         const resp = await fetch('/api/session');
         const data = await resp.json();
         const accessBadge = document.getElementById('status-access');
+        const idBadge = document.getElementById('status-id');
         const refreshBadge = document.getElementById('status-refresh');
 
-        if (data.has_access_token) {
+        const hasToken = data.has_access_token;
+        const expired = data.token_expired;
+
+        if (hasToken && !expired) {
             accessBadge.textContent = '✓ Access token';
             accessBadge.className = 'status-badge status-has';
+        } else if (hasToken && expired) {
+            accessBadge.textContent = '⚠ Access token (expired)';
+            accessBadge.className = 'status-badge status-expired';
         } else {
             accessBadge.textContent = 'No access token';
             accessBadge.className = 'status-badge status-none';
+        }
+        if (data.has_id_token) {
+            idBadge.textContent = '✓ ID token';
+            idBadge.className = 'status-badge status-has';
+        } else {
+            idBadge.textContent = 'No ID token';
+            idBadge.className = 'status-badge status-none';
         }
         if (data.has_refresh_token) {
             refreshBadge.textContent = '✓ Refresh token';
@@ -766,8 +670,103 @@ async function updateSessionStatus() {
             refreshBadge.textContent = 'No refresh token';
             refreshBadge.className = 'status-badge status-none';
         }
+
+        // Enable/disable stored ID token checkbox
+        const hasIdToken = !!data.has_id_token;
+
+        if (reuseIdCheckbox) {
+            reuseIdCheckbox.disabled = !hasIdToken;
+            if (reuseIdLabel) reuseIdLabel.style.opacity = hasIdToken ? '1' : '0.4';
+            // Only auto-check when newly available, don't override user's unchecking
+            if (!hasIdToken) reuseIdCheckbox.checked = false;
+        }
+
     } catch { /* ignore */ }
 }
+
+
+// ══════════════════════════════════════════════════════════════════════════
+// ── PROFILE AVATAR & ID TOKEN PANE ──
+// ══════════════════════════════════════════════════════════════════════════
+
+let _cachedProfile = null;
+
+function getInitials(name) {
+    if (!name) return '?';
+    const parts = name.trim().split(/\s+/);
+    if (parts.length >= 2) return (parts[0][0] + parts[parts.length - 1][0]).toUpperCase();
+    return parts[0][0].toUpperCase();
+}
+
+async function loadProfile() {
+    try {
+        const resp = await fetch('/api/me');
+        const data = await resp.json();
+        if (!data.signed_in) return;
+        _cachedProfile = data;
+
+        const avatar = document.getElementById('profile-avatar');
+        const initials = document.getElementById('profile-initials');
+        const tooltipName = document.getElementById('tooltip-name');
+        const tooltipUpn = document.getElementById('tooltip-upn');
+        const tooltipOid = document.getElementById('tooltip-oid');
+
+        const p = data.profile;
+        initials.textContent = getInitials(p.name);
+        tooltipName.textContent = p.name || '(no name)';
+        tooltipUpn.textContent = p.preferred_username || '(no UPN)';
+        tooltipOid.textContent = p.oid || '(no oid)';
+        avatar.style.display = 'flex';
+
+        // Populate the ID token pane
+        if (data.id_token) {
+            const paneHeader = document.getElementById('id-pane-header');
+            const panePayload = document.getElementById('id-pane-payload');
+            const paneRaw = document.getElementById('id-pane-raw');
+            paneHeader.textContent = formatJson(data.id_token.header);
+            panePayload.textContent = formatJson(data.id_token.payload);
+            paneRaw.value = data.id_token_raw || '';
+        }
+    } catch { /* not signed in */ }
+}
+
+function openIdPane() {
+    document.getElementById('id-pane').classList.add('open');
+    document.getElementById('id-pane-backdrop').classList.add('open');
+}
+
+function closeIdPane() {
+    document.getElementById('id-pane').classList.remove('open');
+    document.getElementById('id-pane-backdrop').classList.remove('open');
+}
+
+// Wire up avatar click and pane close
+document.getElementById('profile-avatar').addEventListener('click', () => {
+    if (_cachedProfile) openIdPane();
+});
+document.getElementById('btn-id-pane-close').addEventListener('click', closeIdPane);
+document.getElementById('id-pane-backdrop').addEventListener('click', closeIdPane);
+document.addEventListener('keydown', (e) => {
+    if (e.key === 'Escape' && document.getElementById('id-pane').classList.contains('open')) {
+        closeIdPane();
+    }
+    if (e.key === 'Escape' && document.getElementById('about-pane').classList.contains('open')) {
+        closeAboutPane();
+    }
+});
+
+// ── About Pane ──
+function openAboutPane() {
+    document.getElementById('about-pane').classList.add('open');
+    document.getElementById('about-pane-backdrop').classList.add('open');
+}
+function closeAboutPane() {
+    document.getElementById('about-pane').classList.remove('open');
+    document.getElementById('about-pane-backdrop').classList.remove('open');
+}
+document.getElementById('btn-about').addEventListener('click', openAboutPane);
+document.getElementById('btn-about-close').addEventListener('click', closeAboutPane);
+document.getElementById('about-pane-backdrop').addEventListener('click', closeAboutPane);
 
 
 // ── Helpers ──
@@ -791,9 +790,225 @@ function escapeHtml(text) {
     return div.innerHTML;
 }
 
+function parseBody(body) {
+    if (body && typeof body === 'object') return body;
+    if (typeof body === 'string' && body.includes('=')) {
+        const obj = {};
+        for (const [k, v] of new URLSearchParams(body)) obj[k] = v;
+        return obj;
+    }
+    return {};
+}
+
+function resolveGuid(value) {
+    const s = String(value);
+    if (highlightMap[s]) return highlightMap[s].label;
+    return s;
+}
+
+function resolveGuidsInString(str) {
+    let s = String(str);
+    for (const [guid, info] of Object.entries(highlightMap)) {
+        if (s.includes(guid)) s = s.replaceAll(guid, info.label);
+    }
+    return s;
+}
+
+function resolveGuidsDeep(obj) {
+    if (typeof obj === 'string') return resolveGuidsInString(obj);
+    if (Array.isArray(obj)) return obj.map(resolveGuidsDeep);
+    if (obj && typeof obj === 'object') {
+        const out = {};
+        for (const [k, v] of Object.entries(obj)) out[k] = resolveGuidsDeep(v);
+        return out;
+    }
+    return obj;
+}
+
+function summarizeResponseBody(body) {
+    if (!body) return '';
+    if (typeof body === 'string') return resolveGuidsInString(body);
+    if (body.message) return resolveGuidsInString(body.message);
+    if (body.error_description) return resolveGuidsInString(body.error_description);
+    if (body.error) return typeof body.error === 'string' ? resolveGuidsInString(body.error) : JSON.stringify(body.error);
+    // Filter out expiry claims and replace token values with readable names
+    const filtered = {};
+    const tokenKeys = { access_token: '[access token]', id_token: '[id token]' };
+    const skipKeys = new Set(['expires_in', 'ext_expires_in', 'not_before', 'refresh_token']);
+    for (const [k, v] of Object.entries(body)) {
+        if (skipKeys.has(k)) continue;
+        if (tokenKeys[k]) { filtered[k] = tokenKeys[k]; continue; }
+        filtered[k] = resolveGuidsDeep(v);
+    }
+    try { return JSON.stringify(filtered, null, 2); } catch { return String(body); }
+}
+
+function _linkifyTokenPlaceholders(html) {
+    return html
+        .replace(/\[access token\]/g, '<a href="#" class="token-link" onclick="switchTab(\'access-token\');return false">[access token]</a>')
+        .replace(/\[user token\]/g, '<a href="#" class="token-link" onclick="openIdPane();return false">[user token]</a>');
+}
+
+function httpStatusText(code) {
+    const map = { 200: 'OK', 201: 'Created', 204: 'No Content', 301: 'Moved Permanently', 302: 'Found',
+        400: 'Bad Request', 401: 'Unauthorized', 403: 'Forbidden', 404: 'Not Found', 405: 'Method Not Allowed',
+        500: 'Internal Server Error', 502: 'Bad Gateway', 503: 'Service Unavailable' };
+    return map[code] || '';
+}
+
 function showError(message) {
+    detailTabs.style.display = 'flex';
+    stepPlaceholder.style.display = 'none';
     sectionResponse.style.display = 'block';
+    document.getElementById('tab-response-empty').style.display = 'none';
     setText('resp-display', `Error: ${message}`);
+    switchTab('response');
+}
+
+function showTokenExpiredError(message) {
+    detailTabs.style.display = 'flex';
+    stepPlaceholder.style.display = 'none';
+    sectionResponse.style.display = 'block';
+    document.getElementById('tab-response-empty').style.display = 'none';
+    const container = document.getElementById('resp-display');
+    const scope = getScope();
+    const flowType = getEffectiveFlowType();
+    container.innerHTML = `<div class="error-banner" style="margin:0">`
+        + `<p style="margin:0 0 10px 0">${escapeHtml(message)}</p>`
+        + `<button class="btn btn-primary" onclick="window.location.href='/auth/login?flow_type=${encodeURIComponent(flowType)}&target_scope=${encodeURIComponent(scope)}&prompt=login'">Sign In Again</button>`
+        + `</div>`;
+    switchTab('response');
+    updateSessionStatus();
+}
+
+
+// ══════════════════════════════════════════════════════════════════════════
+// ── TAB SWITCHING ──
+// ══════════════════════════════════════════════════════════════════════════
+
+function switchTab(tabName) {
+    activeTab = tabName;
+    tabBar.querySelectorAll('.tab-btn').forEach(btn => {
+        btn.classList.toggle('active', btn.dataset.tab === tabName);
+    });
+    document.querySelectorAll('.tab-pane').forEach(pane => {
+        pane.classList.toggle('active', pane.id === `tab-${tabName}`);
+    });
+}
+
+tabBar.addEventListener('click', (e) => {
+    const btn = e.target.closest('.tab-btn');
+    if (btn) switchTab(btn.dataset.tab);
+});
+
+
+// ══════════════════════════════════════════════════════════════════════════
+// ── SUMMARY TAB BUILDER ──
+// ══════════════════════════════════════════════════════════════════════════
+
+function buildSummary(step, idToken) {
+    const req = step.request;
+    const resp = step.response;
+    const tokens = step.tokens || {};
+
+    let html = '';
+
+    // Request summary — filtered body with resolved names
+    if (req) {
+        html += '<div class="summary-section">';
+        html += '<h5 class="summary-heading"><a href="#" class="token-link" onclick="switchTab(\'request\');return false">Request</a></h5>';
+        let bodyLines = '';
+        const bodyObj = parseBody(req.body);
+        const skipReqKeys = new Set(['client_secret', 'code', 'code_verifier', 'redirect_uri']);
+        const tokenReqKeys = {
+            client_assertion: '[parent token (Blueprint)]',
+            assertion: '[user token]',
+        };
+        for (const [key, val] of Object.entries(bodyObj)) {
+            if (skipReqKeys.has(key)) continue;
+            const display = tokenReqKeys[key] || resolveGuidsInString(val);
+            bodyLines += `\n  ${key}: ${display}`;
+        }
+        const reqSummary = `${req.method} ${req.url}${bodyLines}`;
+        html += `<pre class="code-block">${_linkifyTokenPlaceholders(escapeHtml(reqSummary))}</pre>`;
+        html += '</div>';
+    }
+
+    // Response summary
+    if (resp) {
+        html += '<div class="summary-section">';
+        html += '<h5 class="summary-heading"><a href="#" class="token-link" onclick="switchTab(\'response\');return false">Response</a></h5>';
+        const statusCode = typeof resp.status === 'number' ? resp.status : parseInt(resp.status, 10);
+        if (statusCode >= 200 && statusCode < 300 && resp.body) {
+            // Success — show the returned data
+            const bodyStr = summarizeResponseBody(resp.body);
+            html += `<pre class="code-block">${_linkifyTokenPlaceholders(escapeHtml(bodyStr))}</pre>`;
+        } else {
+            // Failure — show status code and message
+            const statusMsg = statusCode ? `${statusCode} ${httpStatusText(statusCode)}` : String(resp.status);
+            let detail = statusMsg;
+            if (resp.body) {
+                const errStr = summarizeResponseBody(resp.body);
+                if (errStr) detail += `\n${errStr}`;
+            }
+            html += `<pre class="code-block">${escapeHtml(detail)}</pre>`;
+        }
+        html += '</div>';
+    }
+
+    // Access token key claims
+    if (tokens.access_token && tokens.access_token.payload) {
+        html += buildClaimsSection('<a href="#" class="token-link" onclick="switchTab(\'access-token\');return false">Access Token</a>', tokens.access_token.payload, ['sub', 'azp', 'scp', 'appid', 'aud']);
+    }
+
+    // ID token key claims
+    if (idToken && idToken.payload) {
+        html += buildClaimsSection('ID Token', idToken.payload, ['sub', 'preferred_username', 'tid', 'azp', 'scp', 'appid', 'aud']);
+    }
+
+    if (!html) {
+        html = '<p class="tab-empty">Display-only step — see the description above.</p>';
+    }
+
+    summaryContent.innerHTML = html;
+}
+
+function buildClaimsSection(title, payload, claimKeys) {
+    const claims = [];
+    for (const key of claimKeys) {
+        if (payload[key] !== undefined && payload[key] !== null) {
+            claims.push({ key, value: payload[key] });
+        }
+    }
+    if (claims.length === 0) return '';
+
+    let html = '<div class="summary-section">';
+    html += `<h5 class="summary-heading">${title}</h5>`;
+    html += '<table class="claims-table"><tbody>';
+    for (const { key, value } of claims) {
+        const desc = CLAIM_DESCRIPTIONS[key] || '';
+        const resolved = resolveClaimValue(key, value);
+        html += '<tr>';
+        html += `<td class="claim-name" title="${escapeHtml(desc)}">${escapeHtml(key)}</td>`;
+        html += `<td class="claim-value">${resolved}</td>`;
+        html += '</tr>';
+    }
+    html += '</tbody></table>';
+    html += '</div>';
+    return html;
+}
+
+function resolveClaimValue(key, value) {
+    const strVal = String(value);
+    // scp is a space-separated list of scope names, not GUIDs
+    if (key === 'scp') return escapeHtml(strVal);
+    // For known IDs, show human-readable label with raw value on hover
+    if (highlightMap[strVal]) {
+        const label = highlightMap[strVal].label;
+        return `<span class="claim-resolved" title="${escapeHtml(strVal)}">${escapeHtml(label)}</span>`;
+    }
+    // tid: show the GUID as-is if no friendly name
+    return escapeHtml(strVal);
 }
 
 
@@ -837,9 +1052,16 @@ function showError(message) {
 
 // ── Init ──
 document.addEventListener('DOMContentLoaded', async () => {
+    // Pulse the info icon only on the very first page load (not after auth redirects)
+    if (!sessionStorage.getItem('visited')) {
+        sessionStorage.setItem('visited', '1');
+        document.getElementById('btn-about')?.classList.add('intro-pulse');
+    }
+
     await loadHighlights();
     loadDiagram(getDiagramKey());
     updateSessionStatus();
+    loadProfile();
     updateFlowUI();
 
     // Check for result after Auth Code redirect
@@ -854,18 +1076,44 @@ document.addEventListener('DOMContentLoaded', async () => {
                 displayResultLegacy(result, data.flow_type || 'auth_code');
             }
             if (data.diagram) await renderMermaid(data.diagram);
+            // Restore composite controls from the returned flow_type
             if (data.flow_type) {
-                const radio = document.querySelector(`input[value="${data.flow_type}"]`);
-                if (radio) {
-                    radio.checked = true;
-                    currentFlowType = data.flow_type;
-                    updateFlowUI();
+                const ft = data.flow_type;
+                if (ft === 'client_credentials' || ft === 'client_credentials_chain') {
+                    authCategory = 'client_credentials'; clientType = 'app';
+                } else if (ft === 'agent_id_autonomous') {
+                    authCategory = 'client_credentials'; clientType = 'agent';
+                } else if (ft === 'obo') {
+                    authCategory = 'user_auth'; clientType = 'app';
+                } else if (ft === 'agent_id_obo') {
+                    authCategory = 'user_auth'; clientType = 'agent';
+                } else {
+                    authCategory = 'user_auth'; clientType = 'app';
                 }
+                // Sync radio buttons
+                const acRadio = document.querySelector(`input[name="auth_category"][value="${authCategory}"]`);
+                if (acRadio) acRadio.checked = true;
+                const ctRadio = document.querySelector(`input[name="client_type"][value="${clientType}"]`);
+                if (ctRadio) ctRadio.checked = true;
+                updateFlowUI();
+                // Select the OBO scope option if the flow was OBO
+                if (ft === 'obo' || ft === 'agent_id_obo') {
+                    for (const opt of scopeSelect.options) {
+                        if (!opt.hidden && opt.dataset.obo === '1') {
+                            opt.selected = true;
+                            break;
+                        }
+                    }
+                }
+                updateSessionStatus();
+                updateDiagramHeader();
             }
             if (currentSteps.length > 0) highlightDiagramStep(currentStepIndex);
         }
         // Refresh highlights (subjects discovered from auth code redirect tokens)
         await loadHighlights();
         if (currentSteps.length > 0) showStep(currentStepIndex);
+        // Refresh profile avatar (new ID token may have arrived)
+        loadProfile();
     } catch { /* no prior result */ }
 });
