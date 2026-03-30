@@ -5,7 +5,7 @@ Requires all three servers running:
   - API A on :8001
   - API B on :8002
 
-Phase 1: Non-interactive (Client Credentials, CC Chain, Agent ID Autonomous)
+Phase 1: Non-interactive (Client Credentials, CC Chain, Agent ID Autonomous, Agent ID Chain)
 Phase 2: Interactive — opens browser for sign-in, then verifies results
          (Auth Code, OBO chain, Agent ID OBO chain, OBO via API)
 """
@@ -286,6 +286,83 @@ def test_agent_id_autonomous():
               f"appid={app_id}")
 
 
+def test_agent_id_autonomous_chain():
+    section("Agent ID Autonomous Chain")
+    if not AGENT_BLUEPRINT_APP_ID:
+        print("  ⊘ Skipped (Agent ID not configured)")
+        return
+
+    # Chain → API B
+    data = execute({
+        "flow_type": "agent_id_autonomous_chain",
+        "scope": f"api://{API_B_APP_ID}/.default",
+    })
+    result = data.get("result", {})
+    steps = result.get("steps", [])
+    check("Chain→API B — has 5 steps", len(steps) == 5,
+          f"got {len(steps)}: {[s.get('label','?') for s in steps]}")
+
+    if len(steps) >= 1:
+        p0 = get_token_payload(result, 0)
+        check("Chain→API B — step 1 parent token aud",
+              p0.get("aud") == "fb60f99c-7a34-4190-8149-302f77469936",
+              f"aud={p0.get('aud')}")
+
+    if len(steps) >= 2:
+        p1 = get_token_payload(result, 1)
+        check("Chain→API B — step 2 aud is API A", p1.get("aud") == API_A_APP_ID,
+              f"aud={p1.get('aud')}")
+        check("Chain→API B — step 2 sub is Agent Identity",
+              p1.get("sub") == AGENT_IDENTITY_ID,
+              f"sub={p1.get('sub')}")
+
+    if len(steps) >= 3:
+        api_a_status = steps[2].get("response", {}).get("status", 0)
+        check("Chain→API B — step 3 API A responds 200", api_a_status == 200,
+              f"status={api_a_status}")
+
+    if len(steps) >= 4:
+        cc_response = steps[3].get("response", {}).get("body", {})
+        check("Chain→API B — step 4 API A got downstream token",
+              bool(cc_response.get("token_type")),
+              f"keys={list(cc_response.keys())[:5]}")
+
+    if len(steps) >= 5:
+        resp = steps[4].get("response", {})
+        check("Chain→API B — step 5 downstream 200",
+              resp.get("status") == 200,
+              f"status={resp.get('status')}")
+
+    # Chain → Graph
+    data = execute({
+        "flow_type": "agent_id_autonomous_chain",
+        "scope": "https://graph.microsoft.com/.default",
+    })
+    result = data.get("result", {})
+    steps = result.get("steps", [])
+    check("Chain→Graph — has 5 steps", len(steps) == 5,
+          f"got {len(steps)}: {[s.get('label','?') for s in steps]}")
+
+    if len(steps) >= 3:
+        api_a_status = steps[2].get("response", {}).get("status", 0)
+        check("Chain→Graph — step 3 API A responds 200", api_a_status == 200,
+              f"status={api_a_status}")
+
+    if len(steps) >= 4:
+        label = steps[3].get("label", "")
+        check("Chain→Graph — step 4 label mentions Graph", "Graph" in label,
+              f"label={label}")
+
+    if len(steps) >= 5:
+        resp = steps[4].get("response", {})
+        label = steps[4].get("label", "")
+        check("Chain→Graph — step 5 label mentions Graph", "Graph" in label,
+              f"label={label}")
+        check("Chain→Graph — step 5 downstream 200",
+              resp.get("status") == 200,
+              f"status={resp.get('status')}")
+
+
 def test_auth_code():
     """Auth Code with API A scope — THE flow that had the bug."""
     section("Auth Code — API A scope (sign-in required)")
@@ -544,6 +621,7 @@ def main():
     test_client_credentials()
     test_client_credentials_chain()
     test_agent_id_autonomous()
+    test_agent_id_autonomous_chain()
 
     p1_pass, p1_fail = _pass, _fail
     print(f"\n  Phase 1 complete: {p1_pass} passed, {p1_fail} failed")

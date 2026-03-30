@@ -171,8 +171,11 @@ function isOboScope() {
 
 function getEffectiveFlowType() {
     if (authCategory === 'client_credentials') {
-        if (clientType === 'agent') return 'agent_id_autonomous';
         const scope = getScope();
+        if (clientType === 'agent') {
+            if (scope.startsWith('chain:')) return 'agent_id_autonomous_chain';
+            return 'agent_id_autonomous';
+        }
         if (scope.startsWith('chain:')) return 'client_credentials_chain';
         return 'client_credentials';
     }
@@ -184,9 +187,9 @@ function getEffectiveFlowType() {
 
 function getDiagramKey() {
     const ft = getEffectiveFlowType();
-    if (ft === 'client_credentials_chain') {
+    if (ft === 'client_credentials_chain' || ft === 'agent_id_autonomous_chain') {
         const scope = getScope();
-        if (scope.includes('graph.microsoft.com')) return 'client_credentials_chain_graph';
+        if (scope.includes('graph.microsoft.com')) return ft + '_graph';
     }
     return ft;
 }
@@ -216,6 +219,8 @@ function updateFlowUI() {
             show = ctx.includes('client_credentials') && (clientType === 'agent' ? ctx.includes('agent') : ctx.includes('app'));
         } else {
             show = ctx.includes('user_auth') && ctx.includes(clientType);
+            // Agent + user_auth only makes sense for OBO targets
+            if (show && clientType === 'agent' && opt.dataset.obo !== '1') show = false;
         }
         opt.hidden = !show;
         if (show && !firstVisible) firstVisible = opt;
@@ -1081,7 +1086,7 @@ document.addEventListener('DOMContentLoaded', async () => {
                 const ft = data.flow_type;
                 if (ft === 'client_credentials' || ft === 'client_credentials_chain') {
                     authCategory = 'client_credentials'; clientType = 'app';
-                } else if (ft === 'agent_id_autonomous') {
+                } else if (ft === 'agent_id_autonomous' || ft === 'agent_id_autonomous_chain') {
                     authCategory = 'client_credentials'; clientType = 'agent';
                 } else if (ft === 'obo') {
                     authCategory = 'user_auth'; clientType = 'app';

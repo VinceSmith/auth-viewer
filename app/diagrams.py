@@ -177,6 +177,74 @@ DIAGRAMS = {
     R->>C: {{ response }}
     end""",
 
+    "agent_id_autonomous_chain": f"""sequenceDiagram
+    participant C as Client App
+    participant E as Entra ID
+    participant A as API A<br/>(middle tier)
+    participant B as API B<br/>(downstream)
+
+    Note over C: Agent ID Autonomous Chain — app-only
+    rect {_S0}
+    Note right of C: Step 1 — Parent Token
+    C->>E: POST /token<br/>(grant_type=client_credentials,<br/>client_id=blueprint_app_id,<br/>client_secret=blueprint_secret,<br/>scope=api://AzureADTokenExchange/.default,<br/>fmi_path=agent_identity_id)
+    E->>C: {{ parent_token }}<br/>(aud: api://AzureADTokenExchange)
+    end
+    rect {_S1}
+    Note right of C: Step 2 — FMI Exchange for API A
+    C->>E: POST /token<br/>(grant_type=client_credentials,<br/>client_id=agent_identity_id,<br/>client_assertion=parent_token,<br/>scope=api://api-a/.default)
+    E->>C: {{ access_token }}<br/>(sub: agent_identity)
+    end
+    rect {_S2}
+    Note right of C: Step 3 — Call API A
+    C->>A: POST /chain<br/>Authorization: Bearer {{agent_token}}
+    Note over A: API A validates token<br/>(sees Agent Identity as caller)
+    end
+    rect {_S3}
+    Note right of A: Step 4 — API A → Client Credentials for API B
+    A->>E: POST /token<br/>(grant_type=client_credentials,<br/>client_id=api_a_id,<br/>client_secret=api_a_secret,<br/>scope=api://api-b/.default)
+    E->>A: {{ access_token }}<br/>(app-only for API B)
+    end
+    rect {_S4}
+    Note right of A: Step 5 — API A → Call API B
+    A->>B: GET /data<br/>Authorization: Bearer {{api_a_token}}
+    B->>A: {{ data }}
+    Note over A: API B sees API A as caller<br/>(not the Agent Identity)
+    end""",
+
+    "agent_id_autonomous_chain_graph": f"""sequenceDiagram
+    participant C as Client App
+    participant E as Entra ID
+    participant A as API A<br/>(middle tier)
+    participant G as Microsoft Graph
+
+    Note over C: Agent ID Autonomous Chain — app-only
+    rect {_S0}
+    Note right of C: Step 1 — Parent Token
+    C->>E: POST /token<br/>(grant_type=client_credentials,<br/>client_id=blueprint_app_id,<br/>client_secret=blueprint_secret,<br/>scope=api://AzureADTokenExchange/.default,<br/>fmi_path=agent_identity_id)
+    E->>C: {{ parent_token }}<br/>(aud: api://AzureADTokenExchange)
+    end
+    rect {_S1}
+    Note right of C: Step 2 — FMI Exchange for API A
+    C->>E: POST /token<br/>(grant_type=client_credentials,<br/>client_id=agent_identity_id,<br/>client_assertion=parent_token,<br/>scope=api://api-a/.default)
+    E->>C: {{ access_token }}<br/>(sub: agent_identity)
+    end
+    rect {_S2}
+    Note right of C: Step 3 — Call API A
+    C->>A: POST /chain<br/>Authorization: Bearer {{agent_token}}
+    Note over A: API A validates token<br/>(sees Agent Identity as caller)
+    end
+    rect {_S3}
+    Note right of A: Step 4 — API A → Client Credentials for Graph
+    A->>E: POST /token<br/>(grant_type=client_credentials,<br/>client_id=api_a_id,<br/>client_secret=api_a_secret,<br/>scope=https://graph.microsoft.com/.default)
+    E->>A: {{ access_token }}<br/>(app-only for Graph)
+    end
+    rect {_S4}
+    Note right of A: Step 5 — API A → Call Graph
+    A->>G: GET /v1.0/organization<br/>Authorization: Bearer {{api_a_token}}
+    G->>A: {{ organization data }}
+    Note over A: Graph sees API A as caller<br/>(not the Agent Identity)
+    end""",
+
     "agent_id_obo": f"""sequenceDiagram
     participant U as User / Browser
     participant C as Client App

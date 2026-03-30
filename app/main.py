@@ -416,6 +416,9 @@ async def api_execute(request: Request):
         elif flow_type == "agent_id_autonomous":
             result = await flows.execute_agent_id_autonomous(scope=scope)
 
+        elif flow_type == "agent_id_autonomous_chain":
+            result = await flows.execute_agent_id_autonomous_chain(scope=scope)
+
         elif flow_type == "agent_id_obo":
             agent_tokens = stored.get("agent_id_obo") or {}
             user_token = body.get("user_token") or agent_tokens.get("access_token", "")

@@ -678,6 +678,163 @@ async def execute_agent_id_autonomous(*, scope: str) -> dict:
 
 
 # ---------------------------------------------------------------------------
+# 7b. Agent ID — Autonomous Chain (app-only → API A → downstream)
+# ---------------------------------------------------------------------------
+
+async def execute_agent_id_autonomous_chain(*, scope: str) -> dict:
+    """Agent ID chain: Agent gets API A token via 2-step exchange, then API A
+    does its own client_credentials for the downstream resource.
+
+    Step 1: Parent token from Blueprint
+    Step 2: FMI exchange for API A token (as Agent Identity)
+    Step 3: Call API A /chain endpoint
+    Step 4: API A's own CC grant to downstream (from response)
+    Step 5: API A calls downstream (from response)
+    """
+    is_graph = "graph.microsoft.com" in scope
+    downstream_label = "Graph" if is_graph else "API B"
+    downstream_scope = scope
+    downstream_url = ("https://graph.microsoft.com/v1.0/organization" if is_graph
+                      else f"{settings.api_b_base_url}/data")
+
+    # Step 1: Parent token
+    step1_params = {
+        "client_id": settings.agent_blueprint_app_id,
+        "client_secret": settings.agent_blueprint_secret,
+        "grant_type": "client_credentials",
+        "scope": "api://AzureADTokenExchange/.default",
+        "fmi_path": settings.agent_identity_id,
+    }
+    step1_result = await _post_token_endpoint(settings.agent_token_endpoint, step1_params)
+    parent_step = _result_to_step(
+        step1_result,
+        label="Parent Token (Blueprint)",
+        description="Blueprint app authenticates with client_credentials + fmi_path "
+                    "to get a parent token scoped to api://AzureADTokenExchange.",
+    )
+    steps = [parent_step]
+
+    parent_token = step1_result["response"]["body"].get("access_token")
+    if not parent_token:
+        steps.append(_build_step(
+            label="FMI Exchange (Failed)",
+            description="Step 1 failed — no parent token acquired.",
+            highlights=_base_highlights(),
+        ))
+        return {"steps": steps}
+
+    # Step 2: Exchange parent token for API A token
+    api_a_scope = _coerce_default_scope(f"api://{settings.api_a_app_id}/.default")
+    step2_params = {
+        "client_id": settings.agent_identity_id,
+        "client_assertion_type": "urn:ietf:params:oauth:client-assertion-type:jwt-bearer",
+        "client_assertion": parent_token,
+        "grant_type": "client_credentials",
+        "scope": api_a_scope,
+    }
+    step2_result = await _post_token_endpoint(settings.agent_token_endpoint, step2_params)
+    exchange_step = _result_to_step(
+        step2_result,
+        label="FMI Exchange (Agent → API A)",
+        description="Agent Identity exchanges the parent token for an app-only token "
+                    "scoped to API A. The token's sub is the Agent Identity.",
+    )
+    steps.append(exchange_step)
+
+    access_token = step2_result["response"]["body"].get("access_token")
+    if not access_token:
+        steps.append(_build_step(
+            label="Call API A (Skipped)",
+            description="FMI exchange did not return an access token.",
+            highlights=_base_highlights(),
+        ))
+        return {"steps": steps}
+
+    # Step 3: Call API A /chain (same as client_credentials_chain steps 2-4)
+    api_a_url = (f"{settings.api_a_base_url}/chain"
+                 f"?target_scope={downstream_scope}&target_url={downstream_url}")
+    api_a_headers = {"Authorization": f"Bearer {access_token}"}
+    try:
+        async with httpx.AsyncClient() as client:
+            api_a_resp = await client.post(api_a_url, headers=api_a_headers)
+        try:
+            api_a_body = api_a_resp.json()
+        except Exception:
+            api_a_body = {"raw": api_a_resp.text}
+        api_a_status = api_a_resp.status_code
+    except Exception as e:
+        api_a_body = {"error": f"Could not reach API A: {e}"}
+        api_a_status = 0
+
+    steps.append(_build_step(
+        label="Call API A",
+        description="Agent presents the app-only token to API A's /chain endpoint. "
+                    "API A validates the token and sees the Agent Identity as the caller.",
+        request={
+            "method": "POST",
+            "url": api_a_url,
+            "headers": {"Authorization": "Bearer <agent_app_only_token>"},
+            "body": {},
+        },
+        response={
+            "status": api_a_status,
+            "headers": {},
+            "body": api_a_body,
+        },
+        highlights=_base_highlights(),
+    ))
+
+    # Step 4: API A's CC grant to downstream (from response)
+    cc_request = api_a_body.get("cc_request", {})
+    cc_response = api_a_body.get("cc_token_response", {})
+    if cc_request:
+        steps.append(_build_step(
+            label=f"API A → Client Credentials for {downstream_label}",
+            description=f"API A performs its own client_credentials grant for "
+                        f"{downstream_label}. This is API A's own identity — "
+                        f"not the Agent Identity.",
+            request={
+                "method": "POST",
+                "url": settings.token_endpoint,
+                "headers": {"Content-Type": "application/x-www-form-urlencoded"},
+                "body": cc_request,
+            },
+            response={
+                "status": 200 if not api_a_body.get("error") else 400,
+                "headers": {},
+                "body": cc_response or {"note": "Token acquired (details omitted)"},
+            },
+            highlights=_base_highlights(),
+        ))
+
+    # Step 5: API A calls downstream (from response)
+    downstream_response = api_a_body.get("downstream_response") or api_a_body.get("api_b_response")
+    actual_downstream_url = api_a_body.get("downstream_url", downstream_url)
+    if downstream_response:
+        steps.append(_build_step(
+            label=f"API A → Call {downstream_label}",
+            description=f"API A calls {downstream_label} with its own app-only token. "
+                        f"The chain is: Agent → API A → {downstream_label}, "
+                        f"where the Agent Identity initiated the flow but API A "
+                        f"uses its own credentials for the downstream hop.",
+            request={
+                "method": "GET",
+                "url": actual_downstream_url,
+                "headers": {"Authorization": "Bearer <api_a_app_only_token>"},
+                "body": {},
+            },
+            response={
+                "status": 200,
+                "headers": {},
+                "body": downstream_response,
+            },
+            highlights=_base_highlights(),
+        ))
+
+    return {"steps": steps}
+
+
+# ---------------------------------------------------------------------------
 # 8. Agent ID — OBO (delegated)
 # ---------------------------------------------------------------------------
 
