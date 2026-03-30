@@ -1,10 +1,9 @@
 <#
-    deploy_azure.ps1 — Deploy auth-viewer to Azure Container Apps with Easy Auth
+    deploy_azure.ps1 — Deploy auth-viewer to Azure Container Apps
 
     Cross-tenant setup:
     - App registrations live in the Entra test tenant (TENANT_ID from .env)
     - Azure resources are deployed to a separate subscription (SubscriptionId param)
-    - Easy Auth is configured to validate tokens from the app registration tenant
 
     Prerequisites:
     - Azure CLI installed and logged in (with access to both tenants)
@@ -18,8 +17,7 @@
     1. Create a resource group, Container Apps environment, and ACR
     2. Build and push the Docker image
     3. Create 3 container apps (main, api-a, api-b) with secrets from .env
-    4. Configure Easy Auth on the main app (requires Entra sign-in from app reg tenant)
-    5. Update the Entra app registration with the new redirect URI
+    4. Update the Entra app registration with the new redirect URI
 #>
 
 param(
@@ -168,7 +166,7 @@ $ApiABaseUrl = "https://$ApiAInternalUrl"
 Write-Host "API A internal URL: $ApiABaseUrl" -ForegroundColor Green
 
 # ══════════════════════════════════════════════════════════════════
-# 7. Deploy Main App (external + Easy Auth)
+# 7. Deploy Main App (external)
 # ══════════════════════════════════════════════════════════════════
 Write-Host "`n=== Deploying Main App (external) ===" -ForegroundColor Yellow
 az containerapp create `
@@ -211,60 +209,6 @@ Write-Host "  az login --tenant $TenantId" -ForegroundColor White
 Write-Host "  az ad app update --id $ClientId --web-redirect-uris http://localhost:8000/auth/callback $RedirectUri" -ForegroundColor White
 
 # ══════════════════════════════════════════════════════════════════
-# 9. Configure Easy Auth (Microsoft Entra, require authentication)
-#    Issuer points to the APP REGISTRATION tenant, not the resource tenant.
-#    This ensures only users from the test tenant (native + B2B guests) can sign in.
-# ══════════════════════════════════════════════════════════════════
-Write-Host "`n=== Configuring Easy Auth ===" -ForegroundColor Yellow
-
-# Get the Container App resource ID
-$AppResourceId = (az containerapp show --name auth-viewer --resource-group $ResourceGroup --query id -o tsv)
-
-# Configure authentication — require login, validate against app reg tenant
-$authConfig = @{
-    properties = @{
-        platform = @{
-            enabled = $true
-        }
-        globalValidation = @{
-            unauthenticatedClientAction = "RedirectToLoginPage"
-            redirectToProvider = "azureactivedirectory"
-        }
-        identityProviders = @{
-            azureActiveDirectory = @{
-                enabled = $true
-                registration = @{
-                    openIdIssuer = "https://login.microsoftonline.com/$TenantId/v2.0"
-                    clientId = $ClientId
-                    clientSecretSettingName = "microsoft-provider-authentication-secret"
-                }
-                validation = @{
-                    allowedAudiences = @($ClientId, "api://$ClientId")
-                }
-            }
-        }
-    }
-} | ConvertTo-Json -Depth 10
-
-$bodyFile = "$env:TEMP\auth-viewer-easyauth.json"
-$authConfig | Set-Content $bodyFile -Encoding UTF8
-
-# Set the client secret as an auth secret
-az containerapp secret set `
-    --name auth-viewer `
-    --resource-group $ResourceGroup `
-    --secrets "microsoft-provider-authentication-secret=$ClientSecret" `
-    -o none
-
-# Apply auth config via ARM
-az rest --method PUT `
-    --url "$AppResourceId/authConfigs/Current?api-version=2024-03-01" `
-    --headers "Content-Type=application/json" `
-    --body "@$bodyFile"
-
-Write-Host "Easy Auth configured — sign-in required for all requests" -ForegroundColor Green
-
-# ══════════════════════════════════════════════════════════════════
 # Done
 # ══════════════════════════════════════════════════════════════════
 Write-Host "`n`u{2705} Deployment complete!" -ForegroundColor Green
@@ -272,5 +216,3 @@ Write-Host "`nApp URL: $AppUrl" -ForegroundColor Cyan
 Write-Host "Callback: $RedirectUri" -ForegroundColor Cyan
 Write-Host "`nResource group: $ResourceGroup" -ForegroundColor Cyan
 Write-Host "ACR:            $AcrName" -ForegroundColor Cyan
-Write-Host "`nEasy Auth requires Entra sign-in before accessing the app." -ForegroundColor Cyan
-Write-Host "Only users in tenant $TenantId (native + B2B guests) can sign in." -ForegroundColor Cyan
