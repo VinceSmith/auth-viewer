@@ -45,10 +45,6 @@ class Settings(BaseSettings):
         return f"{self.authority}/oauth2/v2.0/authorize"
 
     @property
-    def device_code_endpoint(self) -> str:
-        return f"{self.authority}/oauth2/v2.0/devicecode"
-
-    @property
     def api_a_app_uri(self) -> str:
         return f"api://{self.api_a_app_id}" if self.api_a_app_id else ""
 

@@ -1,8 +1,5 @@
 """Raw REST implementations of all OAuth 2.0 / Entra ID token flows."""
 
-import secrets
-import hashlib
-import base64
 import urllib.parse
 
 import httpx
@@ -200,24 +197,11 @@ def _coerce_default_scope(scope: str) -> str:
 
 
 # ---------------------------------------------------------------------------
-# PKCE helpers
-# ---------------------------------------------------------------------------
-
-def generate_pkce_pair() -> tuple[str, str]:
-    """Return (code_verifier, code_challenge) for PKCE S256."""
-    verifier = secrets.token_urlsafe(64)[:128]
-    digest = hashlib.sha256(verifier.encode("ascii")).digest()
-    challenge = base64.urlsafe_b64encode(digest).rstrip(b"=").decode("ascii")
-    return verifier, challenge
-
-
-# ---------------------------------------------------------------------------
 # 1. Authorization Code — build the /authorize URL
 # ---------------------------------------------------------------------------
 
 def build_auth_code_url(
-    *, scope: str, state: str, use_pkce: bool = False,
-    code_challenge: str | None = None,
+    *, scope: str, state: str,
     prompt: str | None = None,
 ) -> dict:
     """Return the authorize URL and the parameters used (for display)."""
@@ -231,16 +215,12 @@ def build_auth_code_url(
     }
     if prompt:
         params["prompt"] = prompt
-    if use_pkce and code_challenge:
-        params["code_challenge"] = code_challenge
-        params["code_challenge_method"] = "S256"
 
     url = f"{settings.authorize_endpoint}?{urllib.parse.urlencode(params)}"
 
-    pkce_label = " + PKCE" if use_pkce else ""
     display_params = {k: v for k, v in params.items() if k != "state"}
     authorize_step = _build_step(
-        label=f"Authorize Redirect{pkce_label}",
+        label="Authorize Redirect",
         description=f"Browser redirects to Entra ID /authorize endpoint. "
                     f"User authenticates and consents to the requested scopes.",
         request={
@@ -274,7 +254,7 @@ def build_auth_code_url(
 # ---------------------------------------------------------------------------
 
 async def exchange_auth_code(
-    *, code: str, scope: str, code_verifier: str | None = None,
+    *, code: str, scope: str,
 ) -> dict:
     """Exchange an authorization code for tokens."""
     params = {
@@ -285,10 +265,6 @@ async def exchange_auth_code(
         "scope": scope,
         "client_secret": settings.client_secret,
     }
-    # PKCE: also send code_verifier alongside client_secret.
-    # Modern best practice (RFC 9126) recommends PKCE for confidential clients too.
-    if code_verifier:
-        params["code_verifier"] = code_verifier
 
     result = await _post_token_endpoint(settings.token_endpoint, params)
 
@@ -296,8 +272,7 @@ async def exchange_auth_code(
         result,
         label="Token Exchange",
         description="Client exchanges the authorization code for tokens by "
-                    "POSTing to the /token endpoint with client credentials."
-                    + (" Includes PKCE code_verifier." if code_verifier else ""),
+                    "POSTing to the /token endpoint with client credentials.",
     )
     result["exchange_step"] = exchange_step
     return result
@@ -588,101 +563,6 @@ async def execute_obo(
         ))
 
     result["steps"] = steps
-    return result
-
-
-# ---------------------------------------------------------------------------
-# 5. Device Code
-# ---------------------------------------------------------------------------
-
-async def start_device_code_flow(*, scope: str) -> dict:
-    """Initiate a device code flow — returns user_code and device_code."""
-    params = {
-        "client_id": settings.client_id,
-        "scope": scope,
-    }
-    headers = {"Content-Type": "application/x-www-form-urlencoded"}
-    body = _build_form_body(params)
-
-    async with httpx.AsyncClient() as client:
-        resp = await client.post(
-            settings.device_code_endpoint, content=body, headers=headers,
-        )
-
-    try:
-        resp_json = resp.json()
-    except Exception:
-        resp_json = {"raw": resp.text}
-
-    result = format_token_response(
-        request_method="POST",
-        request_url=settings.device_code_endpoint,
-        request_headers=headers,
-        request_body=params,
-        response_status=resp.status_code,
-        response_headers=resp.headers,
-        response_body=resp_json,
-    )
-    result["steps"] = [
-        _result_to_step(
-            result,
-            label="Request Device Code",
-            description="Client requests a device code from the /devicecode endpoint. "
-                        "Entra returns a user_code and verification_uri. The user must "
-                        "open that URL on another device and enter the code.",
-        ),
-    ]
-    return result
-
-
-async def poll_device_code(*, device_code: str) -> dict:
-    """Poll the token endpoint for a device code flow completion."""
-    params = {
-        "client_id": settings.client_id,
-        "grant_type": "urn:ietf:params:oauth:grant-type:device_code",
-        "device_code": device_code,
-    }
-    result = await _post_token_endpoint(settings.token_endpoint, params)
-    resp_body = result.get("response", {}).get("body", {})
-    if resp_body.get("error") == "authorization_pending":
-        desc = "Polling the token endpoint. User hasn't completed authentication yet."
-    elif "access_token" in resp_body:
-        desc = "User authenticated successfully! Token endpoint returns access token."
-    else:
-        desc = "Polling the token endpoint for device code completion."
-    result["steps"] = [
-        _result_to_step(
-            result,
-            label="Poll for Token",
-            description=desc,
-        ),
-    ]
-    return result
-
-
-# ---------------------------------------------------------------------------
-# 6. Refresh Token
-# ---------------------------------------------------------------------------
-
-async def execute_refresh(*, refresh_token: str, scope: str) -> dict:
-    """Exchange a refresh token for new tokens."""
-    params = {
-        "client_id": settings.client_id,
-        "client_secret": settings.client_secret,
-        "grant_type": "refresh_token",
-        "refresh_token": refresh_token,
-        "scope": scope,
-    }
-    result = await _post_token_endpoint(settings.token_endpoint, params)
-    result["steps"] = [
-        _result_to_step(
-            result,
-            label="Refresh Token Exchange",
-            description="Client exchanges an opaque refresh token for a fresh set "
-                        "of tokens. The new access token has an updated expiry. "
-                        "A new refresh token may also be issued (token rotation).",
-        ),
-    ]
     return result
 
 

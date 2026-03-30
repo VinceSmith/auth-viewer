@@ -163,8 +163,6 @@ async def auth_login(
         request.session["target_scope"] = ""
         request.session["call_scope"] = request.session["oauth_scope"]
 
-    request.session["pkce_verifier"] = None
-
     result = flows.build_auth_code_url(
         scope=request.session["oauth_scope"],
         state=state,
@@ -184,7 +182,6 @@ async def auth_login(
         "oauth_scope": request.session["oauth_scope"],
         "flow_type": request.session["flow_type"],
         "target_scope": request.session.get("target_scope", ""),
-        "pkce_verifier": request.session.get("pkce_verifier"),
         "authorize_step_id": request.session.get("authorize_step_id"),
     }
     # Keep only last 5 to stay well within cookie size limits
@@ -259,7 +256,6 @@ async def auth_callback(request: Request, code: str = "", state: str = "", error
         request.session["oauth_scope"] = pending["oauth_scope"]
         request.session["flow_type"] = pending["flow_type"]
         request.session["target_scope"] = pending["target_scope"]
-        request.session["pkce_verifier"] = pending["pkce_verifier"]
         if pending.get("auth_request"):
             request.session["auth_request"] = pending["auth_request"]
         if pending.get("authorize_step_id"):
@@ -267,9 +263,8 @@ async def auth_callback(request: Request, code: str = "", state: str = "", error
 
     # Exchange code for tokens
     scope = request.session.get("oauth_scope", "openid profile")
-    verifier = request.session.get("pkce_verifier")
     result = await flows.exchange_auth_code(
-        code=code, scope=scope, code_verifier=verifier,
+        code=code, scope=scope,
     )
 
     flow_type = request.session.get("flow_type", "auth_code")

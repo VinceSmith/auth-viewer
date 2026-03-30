@@ -11,11 +11,8 @@ An interactive teaching tool that visualizes OAuth 2.0 / Entra ID token flows. E
 | Flow | Type | Description |
 |------|------|-------------|
 | Authorization Code | Delegated | Standard web app sign-in |
-| Auth Code + PKCE | Delegated | Public client variant (SPA/mobile) |
 | Client Credentials | App-only | Service-to-service, no user |
 | On-Behalf-Of (OBO) | Delegated | Chain: Client → API A → API B |
-| Device Code | Delegated | Headless/CLI authentication |
-| Refresh Token | Delegated | Token lifecycle renewal |
 | Agent ID — Autonomous | App-only | Two-step: parent token → exchange |
 | Agent ID — OBO | Delegated | Two-step: parent token → OBO exchange |
 
@@ -142,8 +139,8 @@ python test_all_flows.py --no-pause
 ```
 
 65 tests across two phases:
-- **Phase 1** — Non-interactive: Client Credentials, Agent ID Autonomous, Device Code start
-- **Phase 2** — Interactive: Auth Code, PKCE, OBO chain, Agent ID OBO (opens browser)
+- **Phase 1** — Non-interactive: Client Credentials, Agent ID Autonomous
+- **Phase 2** — Interactive: Auth Code, OBO chain, Agent ID OBO (opens browser)
 
 ## How It Works
 

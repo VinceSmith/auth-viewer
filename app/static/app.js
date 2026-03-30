@@ -919,7 +919,7 @@ function buildSummary(step, idToken) {
         html += '<h5 class="summary-heading"><a href="#" class="token-link" onclick="switchTab(\'request\');return false">Request</a></h5>';
         let bodyLines = '';
         const bodyObj = parseBody(req.body);
-        const skipReqKeys = new Set(['client_secret', 'code', 'code_verifier', 'redirect_uri']);
+        const skipReqKeys = new Set(['client_secret', 'code', 'redirect_uri']);
         const tokenReqKeys = {
             client_assertion: '[parent token (Blueprint)]',
             assertion: '[user token]',

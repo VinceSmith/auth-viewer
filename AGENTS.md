@@ -111,11 +111,8 @@ Agent Identity → Graph (delegated: User.Read, via oauth2PermissionGrant)
 | Flow | Type | Key Concepts |
 |------|------|-------------|
 | Authorization Code | Delegated | Standard web sign-in |
-| Auth Code + PKCE | Delegated | code_verifier + code_challenge for public clients |
 | Client Credentials | App-only | Service-to-service, no user context |
 | On-Behalf-Of (OBO) | Delegated | Client → API A → API B chain (6 steps) |
-| Device Code | Delegated | Headless/CLI authentication |
-| Refresh Token | Delegated | Token lifecycle renewal |
 | Agent ID Autonomous | App-only | Blueprint parent token → agent exchange (2 steps) |
 | Agent ID OBO | Delegated | User sign-in → Blueprint → agent OBO exchange (4 steps) |
 
@@ -138,7 +135,7 @@ $env:PYTHONIOENCODING="utf-8"; python test_all_flows.py --no-pause
 ## Testing
 
 The E2E test suite (`test_all_flows.py`) has 65 tests across two phases:
-- **Phase 1**: Non-interactive (client credentials, agent ID autonomous, device code start)
+- **Phase 1**: Non-interactive (client credentials, agent ID autonomous)
 - **Phase 2**: Interactive (opens browser for sign-in, validates results)
 
 Run with `--no-pause` for CI/automated mode (auto-continues between tests).
