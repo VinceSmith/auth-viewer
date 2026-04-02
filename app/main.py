@@ -583,9 +583,6 @@ async def api_execute(request: Request):
         sid = request.session.get("sid", "")
         stored = _token_store.get(sid, {})
 
-        # Ensure OIDC discovery is cached for all flows
-        await flows._ensure_oidc_discovery()
-
         if flow_type == "auth_code":
             user_token, info_steps = await _resolve_user_token(stored, flow_type, body_token=body.get("user_token", ""))
             if not user_token:

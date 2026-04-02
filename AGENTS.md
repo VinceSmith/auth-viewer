@@ -112,9 +112,9 @@ Agent Identity → Graph (delegated: User.Read, via oauth2PermissionGrant)
 |------|------|-------------|
 | Authorization Code | Delegated | Standard web sign-in |
 | Client Credentials | App-only | Service-to-service, no user context |
-| On-Behalf-Of (OBO) | Delegated | Client → API A → API B chain (6 steps) |
-| Agent ID Autonomous | App-only | Blueprint parent token → agent exchange (2 steps) |
-| Agent ID OBO | Delegated | User sign-in → Blueprint → agent OBO exchange (4 steps) |
+| On-Behalf-Of (OBO) | Delegated | Client → API A → API B chain |
+| Agent ID Autonomous | App-only | Blueprint parent token → agent exchange |
+| Agent ID OBO | Delegated | User sign-in → Blueprint → agent OBO exchange |
 
 ## Build / Run Commands
 

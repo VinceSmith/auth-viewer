@@ -93,6 +93,17 @@ const CLAIM_DESCRIPTIONS = {
     xms_az: 'Azure-specific authorization context',
 };
 
+// OIDC discovery document property descriptions (hover tooltips on summary tab)
+const OIDC_PROPERTY_DESCRIPTIONS = {
+    authorization_endpoint: 'URL where the client redirects the user to sign in and consent',
+    token_endpoint: 'URL where the client exchanges a grant (code, assertion, credentials) for tokens',
+    issuer: 'The "iss" claim value — must match this in every token the client validates',
+    jwks_uri: 'URL of the JSON Web Key Set — public keys used to verify token signatures',
+    userinfo_endpoint: 'URL to retrieve claims about the authenticated user (rarely used with Entra)',
+    response_types_supported: 'OAuth response types this server supports (e.g. code, id_token)',
+    scopes_supported: 'Scopes the authorization server advertises (e.g. openid, profile, email)',
+};
+
 // Request parameter descriptions (label + hover description)
 const PARAM_DESCRIPTIONS = {
     client_id: {
@@ -1191,9 +1202,14 @@ function buildSummary(step, idToken, isRequestToken, isResponseToken) {
         html += '<h5 class="summary-heading"><a href="#" class="token-link" onclick="switchTab(\'response\');return false">Response</a></h5>';
         const statusCode = typeof resp.status === 'number' ? resp.status : parseInt(resp.status, 10);
         if (statusCode >= 200 && statusCode < 300 && resp.body) {
-            // Success — show the returned data
-            const bodyStr = summarizeResponseBody(resp.body);
-            html += `<pre class="code-block">${_linkifyTokenPlaceholders(escapeHtml(bodyStr))}</pre>`;
+            // OIDC discovery — render as a table with hover tooltips
+            if (resp.body.authorization_endpoint && resp.body.token_endpoint) {
+                html += buildOidcDiscoverySummary(resp.body);
+            } else {
+                // Success — show the returned data
+                const bodyStr = summarizeResponseBody(resp.body);
+                html += `<pre class="code-block">${_linkifyTokenPlaceholders(escapeHtml(bodyStr))}</pre>`;
+            }
         } else {
             // Failure — show status code and message
             const statusMsg = statusCode ? `${statusCode} ${httpStatusText(statusCode)}` : String(resp.status);
@@ -1240,6 +1256,34 @@ function buildClaimsSection(title, payload, claimKeys) {
     }
     html += '</tbody></table>';
     html += '</div>';
+    return html;
+}
+
+function buildOidcDiscoverySummary(body) {
+    // Shorten URLs by stripping host and replacing tenant GUID with [Tenant ID]
+    const shorten = (url) => {
+        if (!url || typeof url !== 'string') return String(url);
+        const m = url.match(/\/([0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12})/);
+        if (!m) return url;
+        const idx = url.indexOf('/' + m[1]);
+        return url.slice(idx).replace(m[1], '[Tenant ID]');
+    };
+    const keys = [
+        'authorization_endpoint', 'token_endpoint', 'issuer',
+        'jwks_uri', 'userinfo_endpoint',
+        'response_types_supported', 'scopes_supported',
+    ];
+    let html = '<table class="claims-table"><tbody>';
+    for (const key of keys) {
+        if (body[key] === undefined || body[key] === null) continue;
+        const desc = OIDC_PROPERTY_DESCRIPTIONS[key] || '';
+        const val = Array.isArray(body[key]) ? body[key].join(', ') : shorten(body[key]);
+        html += '<tr>';
+        html += `<td class="claim-name">${escapeHtml(key)}${desc ? `<span class="claim-tip">${escapeHtml(desc)}</span>` : ''}</td>`;
+        html += `<td class="claim-value">${escapeHtml(val)}</td>`;
+        html += '</tr>';
+    }
+    html += '</tbody></table>';
     return html;
 }
 

@@ -24,10 +24,13 @@ _graph_cc_cache: dict = {"access_token": "", "expires_at": 0.0}
 _oidc_cache: dict = {}
 
 
-async def _ensure_oidc_discovery() -> dict:
-    """Fetch and cache the OIDC discovery document. Returns the cached doc."""
+async def _ensure_oidc_discovery() -> tuple[dict, bool]:
+    """Fetch and cache the OIDC discovery document.
+
+    Returns (doc, fetched) where fetched=True when a real HTTP call was made.
+    """
     if _oidc_cache:
-        return _oidc_cache
+        return _oidc_cache, False
     discovery_url = f"{settings.authority}/v2.0/.well-known/openid-configuration"
     try:
         async with httpx.AsyncClient() as client:
@@ -41,7 +44,7 @@ async def _ensure_oidc_discovery() -> dict:
             "token_endpoint": settings.authority + "/oauth2/v2.0/token",
             "_fallback": True,
         })
-    return _oidc_cache
+    return _oidc_cache, True
 
 
 def _oidc_discovery_step() -> dict:
@@ -172,18 +175,18 @@ async def _call_resource(*, access_token: str, scope: str) -> dict:
         url = f"{settings.api_a_base_url}/me"
         label = "Call API A"
         desc = ("Present the access token to API A's /me endpoint. "
-                "API A validates the token: (1) fetches JWKS signing keys from "
-                "login.microsoftonline.com/{tenant}/discovery/v2.0/keys, "
+                "API A validates the token: (1) fetches JWKS signing keys from the "
+                "jwks_uri in the cached OIDC discovery document, "
                 "(2) matches the 'kid' header to find the signing key, "
                 "(3) verifies the RS256 signature, (4) checks aud = API A's app ID, "
-                "(5) checks iss = https://login.microsoftonline.com/{tenant}/v2.0, "
+                "(5) checks iss matches the cached issuer, "
                 "(6) checks exp > now. If all pass, returns the token claims.")
     elif settings.api_b_app_id and settings.api_b_app_id in scope:
         url = f"{settings.api_b_base_url}/data"
         label = "Call API B"
         desc = ("Present the access token to API B's /data endpoint. "
-                "API B validates the token: (1) fetches JWKS signing keys, "
-                "(2) matches kid, (3) verifies RS256 signature, "
+                "API B validates the token: (1) fetches JWKS signing keys "
+                "from the cached jwks_uri, (2) matches kid, (3) verifies RS256 signature, "
                 "(4) checks aud = API B's app ID, (5) checks issuer, "
                 "(6) checks expiry. Returns data if valid.")
     elif "graph.microsoft.com" in scope:
@@ -530,7 +533,7 @@ async def build_auth_code_url(
     prompt: str | None = None,
 ) -> dict:
     """Return the authorize URL and the parameters used (for display)."""
-    await _ensure_oidc_discovery()
+    _, fetched = await _ensure_oidc_discovery()
     params = {
         "client_id": settings.client_id,
         "response_type": "code",
@@ -578,7 +581,7 @@ async def build_auth_code_url(
             "body": params,
         },
         "authorize_step": authorize_step,
-        "discovery_step": _oidc_discovery_step(),
+        "discovery_step": _oidc_discovery_step() if fetched else None,
     }
 
 
@@ -607,8 +610,8 @@ async def exchange_auth_code(
         label="Token Exchange",
         description="Client exchanges the authorization code for tokens by "
                     "POSTing to the /token endpoint with client credentials. "
-                    "The /token endpoint URL was discovered from the OIDC "
-                    "discovery document (see first step).",
+                    "The /token endpoint URL comes from the cached OIDC "
+                    "discovery document.",
     )
     result["exchange_step"] = exchange_step
     return result
@@ -620,7 +623,7 @@ async def exchange_auth_code(
 
 async def execute_client_credentials(*, scope: str) -> dict:
     """Acquire an app-only token via client credentials, then call the resource."""
-    await _ensure_oidc_discovery()
+    _, fetched = await _ensure_oidc_discovery()
     coercion_note = _scope_coercion_note(scope)
     params = {
         "client_id": settings.client_id,
@@ -629,8 +632,7 @@ async def execute_client_credentials(*, scope: str) -> dict:
         "scope": _coerce_default_scope(scope),
     }
     result = await _post_token_endpoint(_token_endpoint(), params)
-    steps = [
-        _oidc_discovery_step(),
+    steps = ([_oidc_discovery_step()] if fetched else []) + [
         _result_to_step(
             result,
             label="Client Credentials",
@@ -654,7 +656,7 @@ async def execute_client_credentials_chain(*, scope: str) -> dict:
     Step 3: API A acquires its own app-only token for downstream (shown from response)
     Step 4: API A calls downstream with its own token (shown from response)
     """
-    await _ensure_oidc_discovery()
+    _, fetched = await _ensure_oidc_discovery()
     is_graph = "graph.microsoft.com" in scope
     downstream_label = "Graph" if is_graph else "API B"
     downstream_scope = scope
@@ -669,8 +671,7 @@ async def execute_client_credentials_chain(*, scope: str) -> dict:
         "scope": _coerce_default_scope(f"api://{settings.api_a_app_id}/.default"),
     }
     result = await _post_token_endpoint(_token_endpoint(), params)
-    steps = [
-        _oidc_discovery_step(),
+    steps = ([_oidc_discovery_step()] if fetched else []) + [
         _result_to_step(
             result,
             label="Client Credentials for API A",
@@ -694,8 +695,9 @@ async def execute_client_credentials_chain(*, scope: str) -> dict:
     chain_step, api_a_body = await _call_api_a_chain_step(
         access_token, downstream_scope, downstream_url,
         description="Client presents the app-only token to API A's /chain endpoint. "
-                    "API A validates the token: fetches JWKS keys, matches kid, verifies "
-                    "RS256 signature, checks aud = API A's app ID, checks issuer + expiry.",
+                    "API A validates the token: fetches JWKS keys from the cached "
+                    "jwks_uri, matches kid, verifies RS256 signature, checks aud = "
+                    "API A's app ID, checks issuer + expiry.",
     )
     steps.append(chain_step)
 
@@ -715,8 +717,8 @@ async def execute_obo(
     obo_client_id: str | None = None, obo_client_secret: str | None = None,
 ) -> dict:
     """Exchange a user token for a downstream token via OBO, then call downstream API."""
-    await _ensure_oidc_discovery()
-    steps = [_oidc_discovery_step()]
+    _, fetched = await _ensure_oidc_discovery()
+    steps = [_oidc_discovery_step()] if fetched else []
 
     # ── Step 1: Call API A with the user token ──
     api_a_scope = settings.api_a_scope or f"api://{settings.api_a_app_id}/access_as_user"
@@ -786,15 +788,14 @@ async def execute_agent_id_autonomous(*, scope: str) -> dict:
     Step 1: client_credentials + fmi_path → parent token
     Step 2: client_credentials with parent as client_assertion → final token
     """
-    await _ensure_oidc_discovery()
+    _, fetched = await _ensure_oidc_discovery()
     step1_result, parent_step = await _acquire_parent_token()
     parent_token = step1_result["response"]["body"].get("access_token")
     if not parent_token:
         return {
             "step1": step1_result,
             "step2": {"error": "Step 1 failed — no parent token acquired"},
-            "steps": [
-                _oidc_discovery_step(),
+            "steps": ([_oidc_discovery_step()] if fetched else []) + [
                 parent_step,
                 _build_step(
                     label="FMI Exchange (Failed)",
@@ -805,7 +806,7 @@ async def execute_agent_id_autonomous(*, scope: str) -> dict:
         }
 
     step2_result, exchange_step = await _fmi_exchange(parent_token, scope)
-    steps = [_oidc_discovery_step(), parent_step, exchange_step]
+    steps = ([_oidc_discovery_step()] if fetched else []) + [parent_step, exchange_step]
 
     steps.append(await _call_resource_or_skip(step2_result, scope))
 
@@ -830,7 +831,7 @@ async def execute_agent_id_autonomous_chain(*, scope: str) -> dict:
     Step 4: API A's own CC grant to downstream (from response)
     Step 5: API A calls downstream (from response)
     """
-    await _ensure_oidc_discovery()
+    _, fetched = await _ensure_oidc_discovery()
     is_graph = "graph.microsoft.com" in scope
     downstream_label = "Graph" if is_graph else "API B"
     downstream_scope = scope
@@ -839,7 +840,7 @@ async def execute_agent_id_autonomous_chain(*, scope: str) -> dict:
 
     # Step 1: Parent token
     step1_result, parent_step = await _acquire_parent_token()
-    steps = [_oidc_discovery_step(), parent_step]
+    steps = ([_oidc_discovery_step()] if fetched else []) + [parent_step]
 
     parent_token = step1_result["response"]["body"].get("access_token")
     if not parent_token:
@@ -870,9 +871,10 @@ async def execute_agent_id_autonomous_chain(*, scope: str) -> dict:
     chain_step, api_a_body = await _call_api_a_chain_step(
         access_token, downstream_scope, downstream_url,
         description="Agent presents the app-only token to API A's /chain endpoint. "
-                    "API A validates the token: fetches JWKS keys, matches kid, verifies "
-                    "RS256 signature, checks aud + issuer + expiry. The sub claim "
-                    "identifies the Agent Identity as the caller.",
+                    "API A validates the token: fetches JWKS keys from the cached "
+                    "jwks_uri, matches kid, verifies RS256 signature, checks aud + "
+                    "issuer + expiry. The sub claim identifies the Agent Identity "
+                    "as the caller.",
     )
     steps.append(chain_step)
 
@@ -896,8 +898,8 @@ async def execute_agent_id_obo(*, user_token: str, scope: str) -> dict:
     Step 5: Call downstream resource
     """
     # Ensure OIDC discovery is cached for endpoint resolution
-    await _ensure_oidc_discovery()
-    steps_prefix = [_oidc_discovery_step()]
+    _, fetched = await _ensure_oidc_discovery()
+    steps_prefix = [_oidc_discovery_step()] if fetched else []
     # Step 1: Get parent token
     step1_result, parent_step = await _acquire_parent_token()
     parent_token = step1_result["response"]["body"].get("access_token")
@@ -985,7 +987,9 @@ async def _get_graph_cc_token() -> str:
     if _graph_cc_cache["access_token"] and _time.time() < _graph_cc_cache["expires_at"] - 60:
         return _graph_cc_cache["access_token"]
 
-    await _ensure_oidc_discovery()
+    # Use _token_endpoint() directly — it falls back to the well-known URL
+    # if OIDC discovery hasn't been fetched yet. Don't call _ensure_oidc_discovery()
+    # here to avoid consuming the first-fetch flag before a user-facing flow runs.
     result = await _post_token_endpoint(_token_endpoint(), {
         "client_id": settings.client_id,
         "client_secret": settings.client_secret,

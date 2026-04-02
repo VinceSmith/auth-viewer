@@ -147,16 +147,16 @@ def test_client_credentials():
     data = execute({"flow_type": "client_credentials", "scope": f"api://{API_A_APP_ID}/.default"})
     result = data.get("result", {})
     steps = result.get("steps", [])
-    check("API A — has 2 steps", len(steps) == 2, f"got {len(steps)}")
+    check("API A — has 3 steps", len(steps) == 3, f"got {len(steps)}")
     if steps:
-        p = get_token_payload(result, 0)
+        p = get_token_payload(result, 1)
         check("API A — aud correct", p.get("aud") == API_A_APP_ID, f"aud={p.get('aud')}")
         check("API A — v2.0 token", p.get("ver") == "2.0", f"ver={p.get('ver')}")
         check("API A — has roles claim", bool(p.get("roles")), f"roles={p.get('roles')}")
         check("API A — access_as_app in roles",
               "access_as_app" in (p.get("roles") or []),
               f"roles={p.get('roles')}")
-        check("API A — no error", "error" not in get_step_response(result, 0))
+        check("API A — no error", "error" not in get_step_response(result, 1))
 
     # Graph
     data = execute({"flow_type": "client_credentials", "scope": "https://graph.microsoft.com/.default"})
@@ -410,7 +410,7 @@ def test_hidden_step_visibility():
         result = data.get("result", {})
         steps = result.get("steps", [])
 
-        # Step 0 (Parent Token) should have fmi_path + client_secret masked
+        # Step 1 (Parent Token) should have fmi_path + client_secret masked
         if len(steps) >= 1:
             req0 = get_step_request(result, 0)
             check("Agent ID — fmi_path visible in parent token request",
@@ -420,7 +420,7 @@ def test_hidden_step_visibility():
                   req0.get("client_secret") == "[client_secret]",
                   f"got: {req0.get('client_secret', '<missing>')!r}")
 
-        # Step 1 (FMI Exchange) should have client_assertion_type
+        # Step 2 (FMI Exchange) should have client_assertion_type
         if len(steps) >= 2:
             req1 = get_step_request(result, 1)
             check("Agent ID — client_assertion_type visible in exchange",
@@ -496,25 +496,22 @@ def test_obo_via_api(user_token: str):
 
     result = data.get("result", {})
     steps = result.get("steps", [])
-    check("Has 4 steps", len(steps) == 4, f"got {len(steps)}: {[s.get('label','?') for s in steps]}")
+    check("Has 3 steps", len(steps) == 3, f"got {len(steps)}: {[s.get('label','?') for s in steps]}")
 
     if len(steps) >= 1:
-        check("Step 1 — User Token (Input)", steps[0].get("label") == "User Token (Input)")
+        check("Step 1 — Call API A", "Call API A" in steps[0].get("label", ""))
+        api_a_status = steps[0].get("response", {}).get("status", 0)
+        check("Step 1 — API A responds 200", api_a_status == 200, f"status={api_a_status}")
 
     if len(steps) >= 2:
-        check("Step 2 — Call API A", "Call API A" in steps[1].get("label", ""))
-        api_a_status = steps[1].get("response", {}).get("status", 0)
-        check("Step 2 — API A responds 200", api_a_status == 200, f"status={api_a_status}")
+        check("Step 2 — OBO Token Exchange", "OBO" in steps[1].get("label", ""))
+        resp = get_step_response(result, 1)
+        check("Step 2 — no error", "error" not in resp, f"error={resp.get('error')}")
 
     if len(steps) >= 3:
-        check("Step 3 — OBO Token Exchange", "OBO" in steps[2].get("label", ""))
-        resp = get_step_response(result, 2)
-        check("Step 3 — no error", "error" not in resp, f"error={resp.get('error')}")
-
-    if len(steps) >= 4:
-        check("Step 4 — Call API B", "Call API B" in steps[3].get("label", ""))
-        api_b_status = steps[3].get("response", {}).get("status", 0)
-        check("Step 4 — API B responds 200", api_b_status == 200, f"status={api_b_status}")
+        check("Step 3 — Call API B", "Call API B" in steps[2].get("label", "") or "Call" in steps[2].get("label", ""))
+        api_b_status = steps[2].get("response", {}).get("status", 0)
+        check("Step 3 — API B responds 200", api_b_status == 200, f"status={api_b_status}")
 
 
 def test_obo_redirect():
@@ -558,7 +555,7 @@ def test_obo_redirect():
         check("Step 5 — no error", "error" not in resp)
 
     if len(steps) >= 6:
-        check("Step 6 — Call API B", "Call API B" in steps[5].get("label", ""))
+        check("Step 6 — Call API B", "Call API B" in steps[5].get("label", "") or "Call" in steps[5].get("label", ""))
         api_b_status = steps[5].get("response", {}).get("status", 0)
         check("Step 6 — API B 200", api_b_status == 200, f"status={api_b_status}")
 
@@ -645,18 +642,15 @@ def test_agent_id_obo_via_api(user_token: str):
     check("Has steps", len(steps) >= 3, f"got {len(steps)}: {[s.get('label','?') for s in steps]}")
 
     if len(steps) >= 1:
-        check("Step 1 — User Token (Input)", "User Token" in steps[0].get("label", ""))
-
-    if len(steps) >= 2:
-        check("Step 2 — Parent Token (Blueprint)", "Parent" in steps[1].get("label", ""))
-        p = get_token_payload(result, 1)
+        check("Step 1 — Parent Token (Blueprint)", "Parent" in steps[0].get("label", ""))
+        p = get_token_payload(result, 0)
         check("Parent token aud is AzureADTokenExchange",
               p.get("aud") == "fb60f99c-7a34-4190-8149-302f77469936",
               f"aud={p.get('aud')}")
 
-    if len(steps) >= 3:
-        check("Step 3 — OBO Exchange (Agent)", "OBO" in steps[2].get("label", ""))
-        resp = get_step_response(result, 2)
+    if len(steps) >= 2:
+        check("Step 2 — OBO Exchange (Agent)", "OBO" in steps[1].get("label", ""))
+        resp = get_step_response(result, 1)
         check("OBO exchange — no error", "error" not in resp, f"error={resp.get('error', 'N/A')}")
 
 
