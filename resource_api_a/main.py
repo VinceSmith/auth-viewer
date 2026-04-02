@@ -177,7 +177,7 @@ async def cc_chain(authorization: str = Header(""), target_scope: str = "", targ
         "message": "Hello from API A",
         "original_claims": claims,
         "cc_request": {k: v for k, v in cc_params.items() if k != "client_secret"},
-        "cc_token_response": {k: v for k, v in cc_result.items() if k != "access_token"},
+        "cc_token_response": cc_result,
         "downstream_url": downstream_url,
         "downstream_response": downstream_result,
     }

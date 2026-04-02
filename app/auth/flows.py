@@ -283,16 +283,14 @@ async def _call_api_a_chain_step(
 ) -> dict:
     """Call API A /chain and build the step — shared by CC chain and Agent ID chain."""
     api_a_status, api_a_body = await _call_api_a_chain(access_token, downstream_scope, downstream_url)
-    api_a_url = (f"{settings.api_a_base_url}/chain"
-                 f"?target_scope={downstream_scope}&target_url={downstream_url}")
     return _build_step(
         label="Call API A",
         description=description,
         request={
             "method": "POST",
-            "url": api_a_url,
+            "url": f"{settings.api_a_base_url}/chain",
             "headers": {"Authorization": "Bearer <app_only_token>"},
-            "body": {},
+            "body": {"target_scope": downstream_scope, "target_url": downstream_url},
         },
         response={
             "status": api_a_status,
@@ -449,6 +447,13 @@ async def _fmi_exchange(parent_token: str, scope: str, *, label: str = "FMI Exch
                     "The resulting token's sub claim is the Agent Identity."
                     + coercion_note,
     )
+    # Include decoded parent token so the summary can show what was asserted
+    decoded_parent = decode_jwt(parent_token)
+    if decoded_parent.get("payload"):
+        step["tokens"]["assertion_token"] = {
+            "raw": parent_token,
+            **decoded_parent,
+        }
     return result, step
 
 
@@ -459,7 +464,15 @@ def _parse_chain_response(api_a_body: dict, downstream_label: str, downstream_ur
     """
     steps = []
     cc_request = api_a_body.get("cc_request", {})
-    cc_response = api_a_body.get("cc_token_response", {})
+    # Success path uses "cc_token_response", error path uses "cc_response"
+    cc_response = api_a_body.get("cc_token_response") or api_a_body.get("cc_response") or {}
+    downstream_access_token = cc_response.get("access_token", "")
+    cc_tokens = {}
+    if downstream_access_token:
+        cc_tokens = {"access_token": {
+            "raw": downstream_access_token,
+            **decode_jwt(downstream_access_token),
+        }}
     if cc_request:
         steps.append(_build_step(
             label=f"API A → Client Credentials for {downstream_label}",
@@ -477,6 +490,7 @@ def _parse_chain_response(api_a_body: dict, downstream_label: str, downstream_ur
                 "headers": {},
                 "body": cc_response or {"note": "Token acquired (details omitted)"},
             },
+            tokens=cc_tokens,
             highlights=_base_highlights(),
         ))
 
@@ -499,6 +513,7 @@ def _parse_chain_response(api_a_body: dict, downstream_label: str, downstream_ur
                 "headers": {},
                 "body": downstream_response,
             },
+            tokens=cc_tokens,
             highlights=_base_highlights(),
         ))
 
@@ -657,9 +672,11 @@ async def execute_client_credentials_chain(*, scope: str) -> dict:
     Step 4: API A calls downstream with its own token (shown from response)
     """
     _, fetched = await _ensure_oidc_discovery()
-    is_graph = "graph.microsoft.com" in scope
+    # Strip 'chain:' prefix added by the frontend for routing
+    actual_scope = scope.removeprefix("chain:")
+    is_graph = "graph.microsoft.com" in actual_scope
     downstream_label = "Graph" if is_graph else "API B"
-    downstream_scope = scope
+    downstream_scope = actual_scope
     downstream_url = "https://graph.microsoft.com/v1.0/organization" if is_graph else f"{settings.api_b_base_url}/data"
 
     # Step 1: Client gets token for API A
@@ -832,9 +849,11 @@ async def execute_agent_id_autonomous_chain(*, scope: str) -> dict:
     Step 5: API A calls downstream (from response)
     """
     _, fetched = await _ensure_oidc_discovery()
-    is_graph = "graph.microsoft.com" in scope
+    # Strip 'chain:' prefix added by the frontend for routing
+    actual_scope = scope.removeprefix("chain:")
+    is_graph = "graph.microsoft.com" in actual_scope
     downstream_label = "Graph" if is_graph else "API B"
-    downstream_scope = scope
+    downstream_scope = actual_scope
     downstream_url = ("https://graph.microsoft.com/v1.0/organization" if is_graph
                       else f"{settings.api_b_base_url}/data")
 
@@ -939,6 +958,19 @@ async def execute_agent_id_obo(*, user_token: str, scope: str) -> dict:
                     "token (proving agent identity), the assertion is the user token "
                     "(proving user context).",
     )
+    # Include decoded parent token (client_assertion) and user token (assertion)
+    decoded_parent = decode_jwt(parent_token)
+    if decoded_parent.get("payload"):
+        exchange_step["tokens"]["assertion_token"] = {
+            "raw": parent_token,
+            **decoded_parent,
+        }
+    decoded_user = decode_jwt(user_token)
+    if decoded_user.get("payload"):
+        exchange_step["tokens"]["user_assertion_token"] = {
+            "raw": user_token,
+            **decoded_user,
+        }
 
     steps = steps_prefix + [parent_step, exchange_step]
 

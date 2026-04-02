@@ -179,7 +179,7 @@ const PARAM_DESCRIPTIONS = {
         desc: 'An opaque token from a prior sign-in. Exchanged for a new access token without user interaction. Refresh tokens are audience-agnostic — they can be redeemed for any API the client has permission to access',
     },
     fmi_path: {
-        label: 'Agent Identity',
+        label: 'FMI Path (Agent Identity)',
         desc: 'The object ID of the Agent Identity (BlueprintPrincipal). Tells Entra which agent to scope the parent token to',
     },
     code: {
@@ -583,6 +583,28 @@ function populateStepDetail(step) {
         document.getElementById('req-at-raw').value = tokens.access_token.raw || '';
     } else {
         sectionReqToken.style.display = 'none';
+    }
+
+    // Assertion token on request tab (parent token used as client_assertion)
+    const sectionReqAssertion = document.getElementById('section-req-assertion');
+    if (tokens.assertion_token?.payload) {
+        sectionReqAssertion.style.display = 'block';
+        setHighlightedHtml('req-assertion-header', formatJson(tokens.assertion_token.header));
+        setHighlightedHtml('req-assertion-payload', formatJson(tokens.assertion_token.payload));
+        document.getElementById('req-assertion-raw').value = tokens.assertion_token.raw || '';
+    } else {
+        sectionReqAssertion.style.display = 'none';
+    }
+
+    // User assertion token on request tab (user token used as OBO assertion)
+    const sectionReqUserAssertion = document.getElementById('section-req-user-assertion');
+    if (tokens.user_assertion_token?.payload) {
+        sectionReqUserAssertion.style.display = 'block';
+        setHighlightedHtml('req-user-assertion-header', formatJson(tokens.user_assertion_token.header));
+        setHighlightedHtml('req-user-assertion-payload', formatJson(tokens.user_assertion_token.payload));
+        document.getElementById('req-user-assertion-raw').value = tokens.user_assertion_token.raw || '';
+    } else {
+        sectionReqUserAssertion.style.display = 'none';
     }
 
     // Populate response tab
@@ -1149,12 +1171,16 @@ function buildSummary(step, idToken, isRequestToken, isResponseToken) {
         html += '<div class="summary-section">';
         html += '<h5 class="summary-heading"><a href="#" class="token-link" onclick="switchTab(\'request\');return false">Request</a></h5>';
         if (req) {
-            // Friendly display for local API URLs in summary
-            let displayUrl = req.url;
+            // Friendly display: strip query params and shorten known API URLs
+            let displayUrl = req.url.split('?')[0];
             if (displayUrl.includes('localhost:8001') || displayUrl.includes('127.0.0.1:8001'))
                 displayUrl = displayUrl.replace(/https?:\/\/(localhost|127\.0\.0\.1):8001/, 'API A');
             else if (displayUrl.includes('localhost:8002') || displayUrl.includes('127.0.0.1:8002'))
                 displayUrl = displayUrl.replace(/https?:\/\/(localhost|127\.0\.0\.1):8002/, 'API B');
+            else if (/\/\/api-a[.-]/.test(displayUrl))
+                displayUrl = displayUrl.replace(/https?:\/\/[^/]+/, 'API A');
+            else if (/\/\/api-b[.-]/.test(displayUrl))
+                displayUrl = displayUrl.replace(/https?:\/\/[^/]+/, 'API B');
             html += `<div class="summary-endpoint">${escapeHtml(req.method)} ${escapeHtml(displayUrl)}</div>`;
             const bodyObj = parseBody(req.body);
             const skipReqKeys = new Set(['refresh_token']);
@@ -1189,6 +1215,7 @@ function buildSummary(step, idToken, isRequestToken, isResponseToken) {
                 html += '</tbody></table>';
             }
         }
+
         // Show key claims from the access token used in the request
         if (isRequestToken && tokens.access_token?.payload) {
             html += buildClaimsSection('Access Token Claims', tokens.access_token.payload, SUMMARY_ACCESS_TOKEN_CLAIMS);
