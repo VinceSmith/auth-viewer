@@ -36,7 +36,10 @@ def _decode_part(part: str) -> dict:
 
 
 # Keys to strip from request/response bodies in the step summary.
-_HIDDEN_KEYS = {"state", "client_assertion_type"}
+_HIDDEN_KEYS: set[str] = set()
+
+# Long-lived secrets to mask (replaced with placeholder like "[client_secret]")
+_MASKED_KEYS = {"client_secret"}
 
 
 def format_token_response(
@@ -45,10 +48,17 @@ def format_token_response(
     response_body: dict,
 ) -> dict:
     """Package a token exchange request/response for the UI."""
-    display_body = (
-        {k: v for k, v in request_body.items() if k not in _HIDDEN_KEYS}
-        if isinstance(request_body, dict) else request_body
-    )
+    if isinstance(request_body, dict):
+        display_body = {}
+        for k, v in request_body.items():
+            if k in _HIDDEN_KEYS:
+                continue
+            if k in _MASKED_KEYS:
+                display_body[k] = f"[{k}]"
+            else:
+                display_body[k] = v
+    else:
+        display_body = request_body
     result = {
         "request": {
             "method": request_method,

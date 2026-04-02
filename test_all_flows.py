@@ -363,6 +363,76 @@ def test_agent_id_autonomous_chain():
               f"status={resp.get('status')}")
 
 
+def test_hidden_step_visibility():
+    """Verify the hidden-step educational improvements are working."""
+    section("Hidden Step Visibility")
+
+    # ── client_secret is masked ──
+    data = execute({"flow_type": "client_credentials", "scope": f"api://{API_A_APP_ID}/.default"})
+    result = data.get("result", {})
+    steps = result.get("steps", [])
+    if steps:
+        req_body = get_step_request(result, 0)
+        check("CC — client_secret is masked",
+              req_body.get("client_secret") == "[client_secret]",
+              f"got: {req_body.get('client_secret', '<missing>')!r}")
+        check("CC — client_id is NOT masked",
+              req_body.get("client_id") == CLIENT_ID,
+              f"got: {req_body.get('client_id', '<missing>')!r}")
+
+    # ── scope coercion note in description ──
+    # Use a scope WITHOUT /.default — forces coercion
+    data = execute({"flow_type": "client_credentials", "scope": f"api://{API_A_APP_ID}/access_as_user"})
+    result = data.get("result", {})
+    steps = result.get("steps", [])
+    if steps:
+        desc = steps[0].get("description", "")
+        check("CC coercion — description mentions coercion",
+              "coerced" in desc.lower(),
+              f"description length={len(desc)}")
+        check("CC coercion — description mentions /.default",
+              "/.default" in desc,
+              f"desc snippet: {desc[:80]}")
+
+    # No coercion when scope already has /.default
+    data = execute({"flow_type": "client_credentials", "scope": f"api://{API_A_APP_ID}/.default"})
+    result = data.get("result", {})
+    steps = result.get("steps", [])
+    if steps:
+        desc = steps[0].get("description", "")
+        check("CC no-coercion — description does NOT mention coercion",
+              "coerced" not in desc.lower(),
+              f"desc snippet: {desc[:80]}")
+
+    # ── Agent ID: fmi_path and client_assertion_type visible ──
+    if AGENT_BLUEPRINT_APP_ID:
+        data = execute({"flow_type": "agent_id_autonomous", "scope": "https://graph.microsoft.com/.default"})
+        result = data.get("result", {})
+        steps = result.get("steps", [])
+
+        # Step 0 (Parent Token) should have fmi_path + client_secret masked
+        if len(steps) >= 1:
+            req0 = get_step_request(result, 0)
+            check("Agent ID — fmi_path visible in parent token request",
+                  req0.get("fmi_path") == AGENT_IDENTITY_ID,
+                  f"got: {req0.get('fmi_path', '<missing>')!r}")
+            check("Agent ID — client_secret masked in parent token request",
+                  req0.get("client_secret") == "[client_secret]",
+                  f"got: {req0.get('client_secret', '<missing>')!r}")
+
+        # Step 1 (FMI Exchange) should have client_assertion_type
+        if len(steps) >= 2:
+            req1 = get_step_request(result, 1)
+            check("Agent ID — client_assertion_type visible in exchange",
+                  "jwt-bearer" in (req1.get("client_assertion_type") or ""),
+                  f"got: {req1.get('client_assertion_type', '<missing>')!r}")
+            check("Agent ID — client_assertion visible (parent token)",
+                  bool(req1.get("client_assertion")),
+                  f"present: {bool(req1.get('client_assertion'))}")
+    else:
+        print("  ⊘ Agent ID checks skipped (not configured)")
+
+
 def test_auth_code():
     """Auth Code with API A scope — THE flow that had the bug."""
     section("Auth Code — API A scope (sign-in required)")
@@ -464,7 +534,7 @@ def test_obo_redirect():
 
     check("Flow type is obo", flow == "obo", f"got {flow}")
     steps = result.get("steps", [])
-    check("Has 5 steps", len(steps) == 5, f"got {len(steps)}: {[s.get('label','?') for s in steps]}")
+    check("Has 6 steps", len(steps) == 6, f"got {len(steps)}: {[s.get('label','?') for s in steps]}")
 
     if len(steps) >= 1:
         check("Step 1 — Authorize Redirect", "Authorize" in steps[0].get("label", ""))
@@ -475,19 +545,22 @@ def test_obo_redirect():
         check("Step 2 — aud is API A", p.get("aud") == API_A_APP_ID, f"aud={p.get('aud')}")
 
     if len(steps) >= 3:
-        check("Step 3 — Call API A", "Call API A" in steps[2].get("label", ""))
-        api_a_status = steps[2].get("response", {}).get("status", 0)
-        check("Step 3 — API A 200", api_a_status == 200, f"status={api_a_status}")
+        check("Step 3 — Token Handoff", "Handoff" in steps[2].get("label", ""))
 
     if len(steps) >= 4:
-        check("Step 4 — OBO Token Exchange", "OBO" in steps[3].get("label", ""))
-        resp = get_step_response(result, 3)
-        check("Step 4 — no error", "error" not in resp)
+        check("Step 4 — Call API A", "Call API A" in steps[3].get("label", ""))
+        api_a_status = steps[3].get("response", {}).get("status", 0)
+        check("Step 4 — API A 200", api_a_status == 200, f"status={api_a_status}")
 
     if len(steps) >= 5:
-        check("Step 5 — Call API B", "Call API B" in steps[4].get("label", ""))
-        api_b_status = steps[4].get("response", {}).get("status", 0)
-        check("Step 5 — API B 200", api_b_status == 200, f"status={api_b_status}")
+        check("Step 5 — OBO Token Exchange", "OBO" in steps[4].get("label", ""))
+        resp = get_step_response(result, 4)
+        check("Step 5 — no error", "error" not in resp)
+
+    if len(steps) >= 6:
+        check("Step 6 — Call API B", "Call API B" in steps[5].get("label", ""))
+        api_b_status = steps[5].get("response", {}).get("status", 0)
+        check("Step 6 — API B 200", api_b_status == 200, f"status={api_b_status}")
 
 
 def test_agent_id_obo_redirect():
@@ -511,7 +584,7 @@ def test_agent_id_obo_redirect():
 
     check("Flow type is agent_id_obo", flow == "agent_id_obo", f"got {flow}")
     steps = result.get("steps", [])
-    check("Has 7 steps", len(steps) == 7, f"got {len(steps)}: {[s.get('label','?') for s in steps]}")
+    check("Has 8 steps", len(steps) == 8, f"got {len(steps)}: {[s.get('label','?') for s in steps]}")
 
     if len(steps) >= 1:
         check("Step 1 — Authorize Redirect", "Authorize" in steps[0].get("label", ""))
@@ -524,27 +597,30 @@ def test_agent_id_obo_redirect():
               f"aud={p.get('aud')}")
 
     if len(steps) >= 3:
-        check("Step 3 — Parent Token (Blueprint)", "Parent" in steps[2].get("label", ""))
-        p = get_token_payload(result, 2)
-        check("Step 3 — parent aud is AzureADTokenExchange",
+        check("Step 3 — Token Handoff", "Handoff" in steps[2].get("label", ""))
+
+    if len(steps) >= 4:
+        check("Step 4 — Parent Token (Blueprint)", "Parent" in steps[3].get("label", ""))
+        p = get_token_payload(result, 3)
+        check("Step 4 — parent aud is AzureADTokenExchange",
               p.get("aud") == "fb60f99c-7a34-4190-8149-302f77469936",
               f"aud={p.get('aud')}")
 
-    if len(steps) >= 4:
-        check("Step 4 — OBO Exchange (Agent)", "OBO" in steps[3].get("label", ""))
-        resp = get_step_response(result, 3)
+    if len(steps) >= 5:
+        check("Step 5 — OBO Exchange (Agent)", "OBO" in steps[4].get("label", ""))
+        resp = get_step_response(result, 4)
         if "error" in resp:
             print(f"  ⚠ OBO error: {resp.get('error')}: {resp.get('error_description', '')[:200]}")
-        check("Step 4 — no error", "error" not in resp, f"error={resp.get('error', 'N/A')}")
-
-    if len(steps) >= 5:
-        check("Step 5 — Call API A", "Call API A" in steps[4].get("label", ""))
+        check("Step 5 — no error", "error" not in resp, f"error={resp.get('error', 'N/A')}")
 
     if len(steps) >= 6:
-        check("Step 6 — OBO Token Exchange", "OBO" in steps[5].get("label", ""))
+        check("Step 6 — Call API A", "Call API A" in steps[5].get("label", ""))
 
     if len(steps) >= 7:
-        check("Step 7 — Call Graph", "Call Graph" in steps[6].get("label", ""))
+        check("Step 7 — OBO Token Exchange", "OBO" in steps[6].get("label", ""))
+
+    if len(steps) >= 8:
+        check("Step 8 — Call Graph", "Call Graph" in steps[7].get("label", ""))
 
 
 def test_agent_id_obo_via_api(user_token: str):
@@ -622,6 +698,7 @@ def main():
     test_client_credentials_chain()
     test_agent_id_autonomous()
     test_agent_id_autonomous_chain()
+    test_hidden_step_visibility()
 
     p1_pass, p1_fail = _pass, _fail
     print(f"\n  Phase 1 complete: {p1_pass} passed, {p1_fail} failed")

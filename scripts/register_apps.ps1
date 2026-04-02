@@ -185,13 +185,16 @@ $bodyFile = "$env:TEMP\auth-viewer-client-perms.json"
     },
     {
       "resourceAppId": "00000003-0000-0000-c000-000000000000",
-      "resourceAccess": [{"id": "e1fe6dd8-ba31-4d61-89e7-88639da4683d", "type": "Scope"}]
+      "resourceAccess": [
+        {"id": "e1fe6dd8-ba31-4d61-89e7-88639da4683d", "type": "Scope"},
+        {"id": "b0afded3-3588-46d8-8b3d-9842eff778da", "type": "Role"}
+      ]
     }
   ]
 }
 "@ | Set-Content $bodyFile -Encoding UTF8
 az rest --method PATCH --url "https://graph.microsoft.com/v1.0/applications/$clientObjectId" --headers "Content-Type=application/json" --body "@$bodyFile"
-Write-Host "Set API A + API B + Graph User.Read permissions on client (idempotent)" -ForegroundColor Green
+Write-Host "Set API A + API B + Graph User.Read + AuditLog.Read.All permissions on client (idempotent)" -ForegroundColor Green
 
 
 Write-Host "`n=== Configuring pre-authorizations ===" -ForegroundColor Yellow

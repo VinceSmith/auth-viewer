@@ -554,6 +554,19 @@ body {
     margin: 0;
 }
 
+.summary-endpoint {
+    font-family: var(--font-mono);
+    font-size: 0.78rem;
+    color: var(--text-secondary);
+    margin-bottom: 6px;
+    word-break: break-all;
+}
+
+#redirect-url-display {
+    word-break: break-all;
+    white-space: pre-wrap;
+}
+
 .claims-table {
     width: 100%;
     border-collapse: collapse;
@@ -562,7 +575,6 @@ body {
     background: var(--bg-code);
     border: 1px solid var(--border);
     border-radius: var(--radius);
-    overflow: hidden;
 }
 
 .claims-table td {
@@ -578,6 +590,29 @@ body {
     color: var(--accent);
     font-weight: 600;
     width: 60px;
+    cursor: help;
+    text-decoration: underline dotted rgba(78, 156, 232, 0.4);
+    text-underline-offset: 3px;
+    position: relative;
+}
+.claim-tip {
+    display: none;
+    position: fixed;
+    background: var(--bg-secondary);
+    border: 1px solid var(--border);
+    border-radius: var(--radius);
+    padding: 8px 12px;
+    font-size: 0.72rem;
+    font-weight: 400;
+    font-family: var(--font-body);
+    color: var(--text-primary);
+    white-space: normal;
+    line-height: 1.5;
+    min-width: 240px;
+    max-width: 360px;
+    z-index: 1000;
+    box-shadow: 0 4px 16px rgba(0,0,0,0.4);
+    pointer-events: none;
 }
 
 .claims-table .claim-value {
@@ -807,8 +842,165 @@ select:focus, input:focus {
     pointer-events: none;
 }
 
+/* ── Sign-in Log Tab ── */
+
+.signin-log-toolbar {
+    display: flex;
+    align-items: center;
+    gap: 12px;
+    padding: 8px 0 12px 0;
+    border-bottom: 1px solid var(--border);
+    margin-bottom: 12px;
+}
+.signin-log-countdown {
+    font-size: 0.78rem;
+    color: var(--text-secondary);
+}
+.btn-sm {
+    width: auto;
+}
+.btn-sm {
+    font-size: 0.72rem;
+    padding: 4px 10px;
+    border-radius: var(--radius);
+    border: 1px solid var(--border);
+    background: var(--bg-tertiary);
+    color: var(--text-primary);
+    cursor: pointer;
+    transition: all 0.15s;
+}
+.btn-sm:hover {
+    background: var(--accent);
+    color: #fff;
+    border-color: var(--accent);
+}
+.btn-sm:disabled {
+    opacity: 0.5;
+    cursor: not-allowed;
+}
+
+.signin-log-entry {
+    background: var(--bg-secondary);
+    border: 1px solid var(--border);
+    border-radius: var(--radius);
+    padding: 10px 14px;
+    margin-bottom: 8px;
+}
+.signin-log-entry.preview {
+    border-left: 3px solid var(--accent);
+    opacity: 0.92;
+}
+.signin-log-header {
+    display: flex;
+    align-items: center;
+    gap: 10px;
+    margin-bottom: 6px;
+    flex-wrap: wrap;
+}
+.signin-log-status {
+    font-weight: 700;
+    font-size: 0.9rem;
+}
+.signin-log-status.success { color: #4ec9b0; }
+.signin-log-status.failure { color: #f44747; }
+.signin-log-source {
+    font-size: 0.6rem;
+    text-transform: uppercase;
+    letter-spacing: 0.5px;
+    font-weight: 700;
+    padding: 1px 6px;
+    border-radius: 3px;
+}
+.signin-log-source.preview {
+    background: rgba(78, 201, 176, 0.15);
+    color: #4ec9b0;
+}
+.signin-log-source.enriched {
+    background: rgba(78, 156, 232, 0.15);
+    color: #4e9ce8;
+}
+.signin-log-source.graph {
+    background: rgba(200, 200, 200, 0.1);
+    color: var(--text-muted);
+}
+.signin-log-step-label {
+    font-size: 0.68rem;
+    color: var(--text-muted);
+    font-style: italic;
+}
+.signin-log-pending {
+    margin-top: 6px;
+    padding-top: 6px;
+    border-top: 1px dashed var(--border);
+}
+.signin-log-time {
+    font-size: 0.78rem;
+    color: var(--text-secondary);
+}
+.signin-log-type {
+    font-size: 0.7rem;
+    text-transform: uppercase;
+    letter-spacing: 0.5px;
+    color: var(--accent);
+    font-weight: 600;
+}
+.signin-log-fields {
+    font-size: 0.8rem;
+    line-height: 1.6;
+}
+.signin-log-fields .field-label {
+    display: inline-block;
+    width: 90px;
+    color: var(--text-secondary);
+    font-weight: 600;
+    font-size: 0.72rem;
+    text-transform: uppercase;
+    letter-spacing: 0.3px;
+}
+.signin-log-fields .field-dim {
+    color: var(--text-muted);
+    font-size: 0.75rem;
+}
+.signin-log-fields .field-error {
+    color: #f44747;
+}
+.signin-log-fields .field-success {
+    color: #4ec9b0;
+}
+.signin-log-fields .field-mono {
+    font-family: 'Cascadia Code', 'Fira Code', monospace;
+    font-size: 0.72rem;
+    color: var(--text-muted);
+}
+.signin-log-error {
+    color: #f44747;
+    font-size: 0.82rem;
+    padding: 12px 0;
+}
+
 .profile-avatar:hover .profile-tooltip {
     display: block;
+}
+
+.id-pane-actions {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+}
+.btn-signout {
+    padding: 4px 12px;
+    font-size: 0.72rem;
+    font-weight: 600;
+    color: var(--text-secondary);
+    background: var(--bg-tertiary);
+    border: 1px solid var(--border);
+    border-radius: var(--radius);
+    cursor: pointer;
+    transition: all 0.15s;
+}
+.btn-signout:hover {
+    color: #f44747;
+    border-color: #f44747;
 }
 
 .tooltip-name {

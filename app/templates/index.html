@@ -9,7 +9,6 @@
         <div class="top-bar-spacer"></div>
         <div class="session-status">
             <span id="status-id" class="status-badge status-none">No ID token</span>
-            <span id="status-access" class="status-badge status-none">No access token</span>
             <span id="status-refresh" class="status-badge status-none">No refresh token</span>
         </div>
         <button id="btn-about" class="about-toggle" title="About this app">ⓘ</button>
@@ -43,7 +42,8 @@
                     <li>Pick a <strong>target resource</strong> from the dropdown</li>
                     <li>Click <strong>Execute Flow</strong> (or <strong>Sign In &amp; Execute</strong> for user flows)</li>
                     <li>Step through results using the ◀ ▶ controls</li>
-                    <li>Explore each step’s Summary, HTTP Request, HTTP Response, and Access Token tabs</li>
+                    <li>Explore each step's <strong>Summary</strong>, <strong>HTTP Request</strong>, <strong>HTTP Response</strong>, and <strong>Sign-in Log</strong> tabs</li>
+                    <li>Watch the <strong>sequence diagram</strong> on the left highlight the current step</li>
                     <li>Click your <strong>profile avatar</strong> to inspect the ID token</li>
                 </ol>
             </section>
@@ -68,6 +68,17 @@
                     <li><strong>API A &rarr; API B (chain)</strong> &mdash; Multi-hop app-only chain. The client gets an app token for API A, then API A does its own client credentials grant for API B.</li>
                     <li><strong>API A &rarr; Graph (chain)</strong> &mdash; Same chain pattern, targeting Microsoft Graph downstream.</li>
                 </ul>
+            </section>
+            <section class="about-section">
+                <h3>What You'll See</h3>
+                <p>Each step exposes the full request/response lifecycle:</p>
+                <ul>
+                    <li><strong>Summary</strong> &mdash; Key claims, parameters, and a plain-English explanation of what happened and why.</li>
+                    <li><strong>HTTP Request</strong> &mdash; The raw POST body sent to the token endpoint, including the access token used for API calls.</li>
+                    <li><strong>HTTP Response</strong> &mdash; The raw JSON response with decoded tokens inline. For authorize redirect steps, the full redirect URL with every query param is shown here.</li>
+                    <li><strong>Sign-in Log</strong> &mdash; The matching Entra ID sign-in log entry fetched from Microsoft Graph, so you can see exactly what Entra recorded for each token request.</li>
+                </ul>
+                <p>The app also surfaces normally-hidden behaviors: scope coercion, token cache hits, audience mismatches, OIDC discovery, JWT validation steps, and consent pre-authorization &mdash; all annotated in the step descriptions.</p>
             </section>
             <section class="about-section">
                 <h3>Architecture</h3>
@@ -101,7 +112,10 @@
     <aside class="id-pane" id="id-pane">
         <div class="id-pane-header">
             <span>ID Token</span>
-            <button id="btn-id-pane-close" class="flyout-close" title="Close (Esc)">✕</button>
+            <div class="id-pane-actions">
+                <button id="btn-signout" class="btn-signout" title="Sign out and clear session">Sign out</button>
+                <button id="btn-id-pane-close" class="flyout-close" title="Close (Esc)">✕</button>
+            </div>
         </div>
         <div class="id-pane-body">
             <div class="token-subsection">
@@ -154,6 +168,7 @@
                 <legend>Target Resource</legend>
                 <select id="scope-select">
                     <option value="openid profile {{ settings.api_a_scope }}" data-ctx="user_auth app agent">API A</option>
+                    <option value="openid profile {{ settings.api_b_scope }}" data-ctx="user_auth app agent">API B</option>
                     <option value="https://graph.microsoft.com/.default" data-ctx="user_auth app agent">Microsoft Graph</option>
                     <option value="{{ settings.api_b_app_uri }}/.default" data-ctx="user_auth app agent" data-obo="1">API A &rarr; API B (OBO)</option>
                     <option value="https://graph.microsoft.com/.default" data-ctx="user_auth app agent" data-obo="1">API A &rarr; Graph (OBO)</option>
@@ -200,19 +215,42 @@
                 <div class="detail-tabs" id="detail-tabs" style="display:none">
                     <div class="tab-bar" id="tab-bar">
                         <button class="tab-btn active" data-tab="summary">Summary</button>
+                        <button class="tab-btn" data-tab="redirect" style="display:none">Redirect URL</button>
                         <button class="tab-btn" data-tab="request">HTTP Request</button>
                         <button class="tab-btn" data-tab="response">HTTP Response</button>
-                        <button class="tab-btn" data-tab="access-token">Access Token</button>
+                        <button class="tab-btn" data-tab="signin-log">Sign-in Log</button>
                     </div>
 
                     <div class="tab-pane active" id="tab-summary">
                         <div id="summary-content"></div>
                     </div>
 
+                    <div class="tab-pane" id="tab-redirect">
+                        <section class="detail-section">
+                            <h4 class="section-heading">Authorize Redirect URL</h4>
+                            <pre id="redirect-url-display" class="code-block"></pre>
+                        </section>
+                    </div>
+
                     <div class="tab-pane" id="tab-request">
                         <section class="detail-section" id="section-request">
                             <h4 class="section-heading">HTTP Request</h4>
                             <pre id="req-display" class="code-block"></pre>
+                        </section>
+                        <section class="detail-section" id="section-req-token" style="display:none">
+                            <h4 class="section-heading">Access Token (sent in request)</h4>
+                            <div class="token-subsection">
+                                <h5>Decoded Header</h5>
+                                <pre id="req-at-header" class="code-block"></pre>
+                            </div>
+                            <div class="token-subsection">
+                                <h5>Decoded Payload</h5>
+                                <pre id="req-at-payload" class="code-block"></pre>
+                            </div>
+                            <div class="token-subsection">
+                                <h5>Raw Token</h5>
+                                <textarea id="req-at-raw" class="code-block raw-token" readonly></textarea>
+                            </div>
                         </section>
                         <div class="tab-empty" id="tab-request-empty" style="display:none">No HTTP request data for this step.</div>
                     </div>
@@ -222,26 +260,34 @@
                             <h4 class="section-heading">HTTP Response</h4>
                             <pre id="resp-display" class="code-block"></pre>
                         </section>
-                        <div class="tab-empty" id="tab-response-empty" style="display:none">No HTTP response data for this step.</div>
-                    </div>
-
-                    <div class="tab-pane" id="tab-access-token">
-                        <section class="detail-section" id="section-access-token">
-                            <h4 class="section-heading">Access Token</h4>
+                        <section class="detail-section" id="section-resp-token" style="display:none">
+                            <h4 class="section-heading">Access Token (returned in response)</h4>
                             <div class="token-subsection">
                                 <h5>Decoded Header</h5>
-                                <pre id="at-header" class="code-block"></pre>
+                                <pre id="resp-at-header" class="code-block"></pre>
                             </div>
                             <div class="token-subsection">
                                 <h5>Decoded Payload</h5>
-                                <pre id="at-payload" class="code-block"></pre>
+                                <pre id="resp-at-payload" class="code-block"></pre>
                             </div>
                             <div class="token-subsection">
                                 <h5>Raw Token</h5>
-                                <textarea id="at-raw" class="code-block raw-token" readonly></textarea>
+                                <textarea id="resp-at-raw" class="code-block raw-token" readonly></textarea>
                             </div>
                         </section>
-                        <div class="tab-empty" id="tab-access-token-empty" style="display:none">No access token for this step.</div>
+                        <div class="tab-empty" id="tab-response-empty" style="display:none">No HTTP response data for this step.</div>
+                    </div>
+
+                    <div class="tab-pane" id="tab-signin-log">
+                        <div class="signin-log-toolbar" id="signin-log-toolbar" style="display:none">
+                            <span id="signin-log-countdown" class="signin-log-countdown"></span>
+                            <button id="btn-signin-log-fetch" class="btn btn-sm">Check Now</button>
+                        </div>
+                        <div id="signin-log-content"></div>
+                        <div class="tab-empty" id="tab-signin-log-empty">
+                            Execute a flow to see Entra ID sign-in log entries here.<br>
+                            <small>Logs typically take 2–5 minutes to appear after a sign-in event.</small>
+                        </div>
                     </div>
 
 
