@@ -54,7 +54,7 @@ async def validate_token(token: str) -> dict:
             token,
             rsa_key,
             algorithms=["RS256"],
-            audience=API_A_APP_ID,
+            audience=[API_A_APP_ID, f"api://{API_A_APP_ID}"],
             issuer=f"https://login.microsoftonline.com/{TENANT_ID}/v2.0",
             options={"verify_exp": True},
         )
