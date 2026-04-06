@@ -1,0 +1,114 @@
+name: Deploy to Azure Container Apps
+
+# Triggers: push to main branch or manual dispatch
+on:
+  push:
+    branches:
+      - main
+  workflow_dispatch:
+    inputs:
+      resource_group:
+        description: "Azure resource group (overrides default)"
+        required: false
+        default: ""
+      acr_name:
+        description: "Azure Container Registry name (overrides default)"
+        required: false
+        default: ""
+
+# Needed for OIDC token issuance if you use federated credentials
+permissions:
+  id-token: write
+  contents: read
+
+env:
+  RESOURCE_GROUP: ${{ github.event.inputs.resource_group || 'rg-auth-viewer' }}
+  ACR_NAME: ${{ github.event.inputs.acr_name || 'authvieweracr' }}
+  IMAGE_NAME: auth-viewer
+
+jobs:
+  deploy:
+    name: Build & Deploy
+    runs-on: ubuntu-latest
+
+    steps:
+      # ── 1. Checkout ──────────────────────────────────────────────
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      # ── 2. Authenticate with Azure ───────────────────────────────
+      # Requires the AZURE_CREDENTIALS secret (JSON service principal).
+      # Create with:
+      #   az ad sp create-for-rbac \
+      #     --name "github-auth-viewer" \
+      #     --role contributor \
+      #     --scopes /subscriptions/<SUBSCRIPTION_ID>/resourceGroups/rg-auth-viewer \
+      #     --sdk-auth
+      # Copy the entire JSON output and store it as the AZURE_CREDENTIALS secret in GitHub.
+      - name: Azure Login
+        uses: azure/login@v2
+        with:
+          creds: ${{ secrets.AZURE_CREDENTIALS }}
+
+      # ── 3. Set subscription ──────────────────────────────────────
+      - name: Set Azure subscription
+        run: az account set --subscription ${{ secrets.AZURE_SUBSCRIPTION_ID }}
+
+      # ── 4. Build & push image via ACR Tasks ─────────────────────
+      # Uses ACR's cloud build — no local Docker daemon required.
+      # Tags image with both the commit SHA and 'latest'.
+      # Also resolves the full ACR login server for use in later steps.
+      - name: Build and push Docker image
+        run: |
+          ACR_SERVER=$(az acr show --name "${{ env.ACR_NAME }}" --query loginServer -o tsv)
+          echo "ACR_SERVER=$ACR_SERVER" >> "$GITHUB_ENV"
+          az acr build \
+            --registry "${{ env.ACR_NAME }}" \
+            --image "${{ env.IMAGE_NAME }}:${{ github.sha }}" \
+            --image "${{ env.IMAGE_NAME }}:latest" \
+            --file Dockerfile \
+            .
+
+      # ── 5. Deploy API B (internal) ───────────────────────────────
+      - name: Update API B container app
+        run: |
+          az containerapp update \
+            --name api-b \
+            --resource-group "${{ env.RESOURCE_GROUP }}" \
+            --image "${{ env.ACR_SERVER }}/${{ env.IMAGE_NAME }}:${{ github.sha }}" \
+            -o none
+
+      # ── 6. Deploy API A (internal) ───────────────────────────────
+      - name: Update API A container app
+        run: |
+          az containerapp update \
+            --name api-a \
+            --resource-group "${{ env.RESOURCE_GROUP }}" \
+            --image "${{ env.ACR_SERVER }}/${{ env.IMAGE_NAME }}:${{ github.sha }}" \
+            -o none
+
+      # ── 7. Deploy main app (external) ───────────────────────────
+      - name: Update main app container app
+        run: |
+          az containerapp update \
+            --name auth-viewer \
+            --resource-group "${{ env.RESOURCE_GROUP }}" \
+            --image "${{ env.ACR_SERVER }}/${{ env.IMAGE_NAME }}:${{ github.sha }}" \
+            -o none
+
+      # ── 8. Print the live URL ────────────────────────────────────
+      - name: Show deployed app URL
+        run: |
+          APP_FQDN=$(az containerapp show \
+            --name auth-viewer \
+            --resource-group "${{ env.RESOURCE_GROUP }}" \
+            --query "properties.configuration.ingress.fqdn" \
+            -o tsv)
+          echo "✅ Deployment complete!"
+          echo "App URL: https://$APP_FQDN"
+          echo "APP_URL=https://$APP_FQDN" >> "$GITHUB_ENV"
+
+      # ── 9. Azure logout ──────────────────────────────────────────
+      - name: Azure Logout
+        if: always()
+        run: az logout
