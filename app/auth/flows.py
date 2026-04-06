@@ -397,6 +397,18 @@ def _offline_access_note(scope: str) -> str:
     return ""
 
 
+def _user_read_note(token_body: dict) -> str:
+    """Return a note about User.Read if it appears in the token's scp claim."""
+    scp = token_body.get("scp", "") if isinstance(token_body, dict) else ""
+    if "User.Read" in scp:
+        return (" Note: the scp claim includes 'User.Read' even though it was not "
+                "requested in this flow. Entra adds User.Read as a default delegated "
+                "permission on all new app registrations. The scp claim always includes "
+                "all consented delegated permissions for the resource — not just "
+                "the scopes requested in the current token request.")
+    return ""
+
+
 # ---------------------------------------------------------------------------
 # Shared Agent ID helpers (used by autonomous, autonomous chain, and OBO)
 # ---------------------------------------------------------------------------
@@ -620,13 +632,17 @@ async def exchange_auth_code(
 
     result = await _post_token_endpoint(_token_endpoint(), params)
 
+    resp_body = result.get("response", {}).get("body", {})
+    at = resp_body.get("access_token", "")
+    at_payload = decode_jwt(at).get("payload", {}) if at else {}
     exchange_step = _result_to_step(
         result,
         label="Token Exchange",
         description="Client exchanges the authorization code for tokens by "
                     "POSTing to the /token endpoint with client credentials. "
                     "The /token endpoint URL comes from the cached OIDC "
-                    "discovery document.",
+                    "discovery document."
+                    + _user_read_note(at_payload),
     )
     result["exchange_step"] = exchange_step
     return result
@@ -747,6 +763,9 @@ async def execute_obo(
         obo_client_id=obo_client_id, obo_client_secret=obo_client_secret,
     )
 
+    obo_body = result.get("response", {}).get("body", {})
+    obo_at = obo_body.get("access_token", "")
+    obo_payload = decode_jwt(obo_at).get("payload", {}) if obo_at else {}
     exchange_step = _result_to_step(
         result,
         label="OBO Token Exchange",
@@ -756,7 +775,8 @@ async def execute_obo(
                     "token where the audience switches to the downstream API, but "
                     "the user's identity (sub/upn) is preserved. This only succeeds "
                     "if both the user and API A have been granted permissions to the "
-                    "downstream API.",
+                    "downstream API."
+                    + _user_read_note(obo_payload),
     )
     steps.append(exchange_step)
 
@@ -782,6 +802,9 @@ async def silent_acquire(*, refresh_token: str, scope: str) -> dict:
         "scope": scope,
     }
     result = await _post_token_endpoint(_token_endpoint(), params)
+    silent_body = result.get("response", {}).get("body", {})
+    silent_at = silent_body.get("access_token", "")
+    silent_payload = decode_jwt(silent_at).get("payload", {}) if silent_at else {}
     result["step"] = _result_to_step(
         result,
         label="Silent Token Acquisition",
@@ -790,7 +813,8 @@ async def silent_acquire(*, refresh_token: str, scope: str) -> dict:
                     f"are audience-agnostic — they're tied to the client registration "
                     f"+ user session, so they can be redeemed for tokens targeting "
                     f"any API the client has permission to access. No new sign-in "
-                    f"or /authorize redirect is needed.",
+                    f"or /authorize redirect is needed."
+                    + _user_read_note(silent_payload),
     )
     return result
 
@@ -989,6 +1013,9 @@ async def execute_agent_id_obo(*, user_token: str, scope: str) -> dict:
     # Step 5: OBO exchange — API A exchanges agent's token for downstream (API B)
     obo_result = await _obo_token_exchange(assertion=api_a_token, scope=scope)
 
+    agent_obo_body = obo_result.get("response", {}).get("body", {})
+    agent_obo_at = agent_obo_body.get("access_token", "")
+    agent_obo_payload = decode_jwt(agent_obo_at).get("payload", {}) if agent_obo_at else {}
     obo_step = _result_to_step(
         obo_result,
         label="OBO Token Exchange",
@@ -996,7 +1023,8 @@ async def execute_agent_id_obo(*, user_token: str, scope: str) -> dict:
                     "It authenticates as itself (client_id + client_secret) and "
                     "presents the agent's API A token as an assertion. Entra issues "
                     "a new token where the audience switches to the downstream API, "
-                    "but the user's identity is preserved.",
+                    "but the user's identity is preserved."
+                    + _user_read_note(agent_obo_payload),
     )
     steps.append(obo_step)
 

@@ -1026,6 +1026,14 @@ function resolveGuidsInString(str) {
     return s;
 }
 
+function resolveGuidsWithOriginal(str) {
+    let s = String(str);
+    for (const [guid, info] of Object.entries(highlightMap)) {
+        if (s.includes(guid)) s = s.replaceAll(guid, `${info.label} (${guid})`);
+    }
+    return s;
+}
+
 function resolveGuidsDeep(obj) {
     if (typeof obj === 'string') return resolveGuidsInString(obj);
     if (Array.isArray(obj)) return obj.map(resolveGuidsDeep);
@@ -1199,7 +1207,7 @@ function buildSummary(step, idToken, isRequestToken, isResponseToken) {
                     // Show human-readable name with GUID for agent identity
                     display = `${highlightMap[val].label} (${val})`;
                 } else {
-                    display = resolveGuidsInString(val);
+                    display = resolveGuidsWithOriginal(val);
                 }
                 const info = PARAM_DESCRIPTIONS[key] || {};
                 rows.push({ key, display, label: info.label || key, desc: info.desc || '' });
@@ -1318,10 +1326,10 @@ function resolveClaimValue(key, value) {
     const strVal = String(value);
     // scp is a space-separated list of scope names, not GUIDs
     if (key === 'scp') return escapeHtml(strVal);
-    // For known IDs, show human-readable label with raw value on hover
+    // For known IDs, show human-readable label with actual value in parentheses
     if (highlightMap[strVal]) {
         const label = highlightMap[strVal].label;
-        return `<span class="claim-resolved" title="${escapeHtml(strVal)}">${escapeHtml(label)}</span>`;
+        return `<span class="claim-resolved" title="${escapeHtml(strVal)}">${escapeHtml(label)} (${escapeHtml(strVal)})</span>`;
     }
     // tid: show the GUID as-is if no friendly name
     return escapeHtml(strVal);

@@ -536,10 +536,13 @@ async def auth_callback(request: Request, code: str = "", state: str = "", error
         bootstrap_step = flows._build_step(
             label="Session Bootstrap",
             description="This Auth Code flow was triggered automatically to establish your session. "
-                        "The scope 'openid profile offline_access' requests only identity claims "
-                        "(no API access). The resulting refresh token is stored and can be used "
-                        "to silently acquire access tokens for any API the client app has permission "
-                        "to access — without requiring another sign-in redirect.",
+                        "The scopes 'openid profile offline_access' make this an OpenID Connect "
+                        "authentication request — it authenticates the user, not authorize access "
+                        "to a resource. The response contains an ID token "
+                        "(https://learn.microsoft.com/entra/identity-platform/id-tokens) "
+                        "rather than an access token. The 'offline_access' scope also returns a "
+                        "refresh token, which can silently acquire access tokens for any API the "
+                        "client has permission to access — without another sign-in.",
             highlights=flows._base_highlights(),
         )
         result["steps"] = [bootstrap_step] + result.get("steps", [])

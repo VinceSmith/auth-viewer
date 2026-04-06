@@ -25,3 +25,6 @@ Thumbs.db
 tmp_*.json
 easyauth-code.json
 .pytest_cache/
+
+# Chat session logs
+.chat/

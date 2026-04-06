@@ -50,14 +50,19 @@ async def validate_token(token: str) -> dict:
         if not rsa_key:
             raise HTTPException(status_code=401, detail="Signing key not found")
 
+        # python-jose doesn't accept a list for audience, so validate manually
         claims = jwt.decode(
             token,
             rsa_key,
             algorithms=["RS256"],
-            audience=[API_A_APP_ID, f"api://{API_A_APP_ID}"],
+            audience=None,
             issuer=f"https://login.microsoftonline.com/{TENANT_ID}/v2.0",
-            options={"verify_exp": True},
+            options={"verify_exp": True, "verify_aud": False},
         )
+        token_aud = claims.get("aud", "")
+        valid_audiences = {API_A_APP_ID, f"api://{API_A_APP_ID}"}
+        if token_aud not in valid_audiences:
+            raise JWTError(f"Invalid audience: {token_aud}")
         return claims
     except JWTError as e:
         raise HTTPException(status_code=401, detail=f"Token validation failed: {e}")
