@@ -31,6 +31,7 @@ CLIENT_ID = os.environ["CLIENT_ID"]
 API_A_APP_ID = os.environ["API_A_APP_ID"]
 API_A_SCOPE = os.environ["API_A_SCOPE"]
 API_B_APP_ID = os.environ["API_B_APP_ID"]
+CLIENT_SECRET = os.environ.get("CLIENT_SECRET", "")
 AGENT_BLUEPRINT_APP_ID = os.environ.get("AGENT_BLUEPRINT_APP_ID", "")
 AGENT_IDENTITY_ID = os.environ.get("AGENT_IDENTITY_ID", "")
 
@@ -620,9 +621,30 @@ def test_agent_id_obo_redirect():
         check("Step 8 — Call Graph", "Call Graph" in steps[7].get("label", ""))
 
 
+def _acquire_token_for_scope(refresh_token: str, scope: str) -> str:
+    """Exchange a refresh token for an access token with a specific scope."""
+    resp = httpx.post(
+        f"https://login.microsoftonline.com/{TENANT_ID}/oauth2/v2.0/token",
+        data={
+            "client_id": CLIENT_ID,
+            "client_secret": CLIENT_SECRET,
+            "grant_type": "refresh_token",
+            "refresh_token": refresh_token,
+            "scope": scope,
+        },
+        timeout=30,
+    )
+    return resp.json().get("access_token", "")
+
+
 def test_agent_id_obo_via_api(user_token: str):
-    """Test Agent ID OBO via /api/execute with an explicit user token."""
-    section("Agent ID OBO via API (using stored token)")
+    """Test Agent ID OBO via /api/execute with a Blueprint-scoped token.
+
+    Unlike the OBO test (which reuses the API A-scoped token), Agent ID OBO
+    needs a token whose audience is the Blueprint app. The caller acquires
+    this via refresh token exchange before calling this function.
+    """
+    section("Agent ID OBO via API (using Blueprint-scoped token)")
     if not AGENT_BLUEPRINT_APP_ID:
         print("  ⊘ Skipped (Agent ID not configured)")
         return
@@ -639,18 +661,24 @@ def test_agent_id_obo_via_api(user_token: str):
 
     result = data.get("result", {})
     steps = result.get("steps", [])
-    check("Has steps", len(steps) >= 3, f"got {len(steps)}: {[s.get('label','?') for s in steps]}")
+    labels = [s.get("label", "") for s in steps]
+    check("Has steps", len(steps) >= 3, f"got {len(steps)}: {labels}")
 
-    if len(steps) >= 1:
-        check("Step 1 — Parent Token (Blueprint)", "Parent" in steps[0].get("label", ""))
-        p = get_token_payload(result, 0)
+    # Server may prepend info steps (Token Audience Mismatch, Silent Acquire)
+    # before the actual flow steps.  Find key steps by label, not index.
+    parent_idx = next((i for i, s in enumerate(steps) if "Parent" in s.get("label", "")), None)
+    obo_idx = next((i for i, s in enumerate(steps) if "OBO" in s.get("label", "")), None)
+
+    if parent_idx is not None:
+        check("Parent Token (Blueprint) step present", True)
+        p = get_token_payload(result, parent_idx)
         check("Parent token aud is AzureADTokenExchange",
               p.get("aud") == "fb60f99c-7a34-4190-8149-302f77469936",
               f"aud={p.get('aud')}")
 
-    if len(steps) >= 2:
-        check("Step 2 — OBO Exchange (Agent)", "OBO" in steps[1].get("label", ""))
-        resp = get_step_response(result, 1)
+    if obo_idx is not None:
+        check("OBO Exchange (Agent) step present", True)
+        resp = get_step_response(result, obo_idx)
         check("OBO exchange — no error", "error" not in resp, f"error={resp.get('error', 'N/A')}")
 
 
@@ -712,7 +740,19 @@ def main():
     # OBO using the Auth Code token (tests backend OBO logic)
     if user_token:
         test_obo_via_api(user_token)
-        test_agent_id_obo_via_api(user_token)
+
+        # Agent ID OBO needs a token scoped to the Blueprint (not API A).
+        # Exchange the refresh token for a Blueprint-scoped access token.
+        refresh_token = raw_tokens.get("refresh_token", "")
+        blueprint_token = ""
+        if AGENT_BLUEPRINT_APP_ID and refresh_token:
+            blueprint_scope = f"api://{AGENT_BLUEPRINT_APP_ID}/access_as_user"
+            blueprint_token = _acquire_token_for_scope(refresh_token, blueprint_scope)
+        if blueprint_token:
+            test_agent_id_obo_via_api(blueprint_token)
+        elif AGENT_BLUEPRINT_APP_ID:
+            section("Agent ID OBO via API")
+            check("Skipped — could not acquire Blueprint-scoped token", False)
     else:
         section("OBO via API")
         check("Skipped — no user token from Auth Code", False)

@@ -538,9 +538,10 @@ async def auth_callback(request: Request, code: str = "", state: str = "", error
             description="This Auth Code flow was triggered automatically to establish your session. "
                         "The scopes 'openid profile offline_access' make this an OpenID Connect "
                         "authentication request — it authenticates the user, not authorize access "
-                        "to a resource. The response contains an ID token "
-                        "(https://learn.microsoft.com/entra/identity-platform/id-tokens) "
-                        "rather than an access token. The 'offline_access' scope also returns a "
+                        "to a resource. Entra ID still returns an access token alongside the ID "
+                        "token because it auto-grants the Graph User.Read scope to all "
+                        "confidential clients, even when only OIDC scopes are requested. "
+                        "The 'offline_access' scope also returns a "
                         "refresh token, which can silently acquire access tokens for any API the "
                         "client has permission to access — without another sign-in.",
             highlights=flows._base_highlights(),

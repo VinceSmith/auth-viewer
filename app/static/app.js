@@ -1164,7 +1164,7 @@ tabBar.addEventListener('click', (e) => {
 const SUMMARY_ACCESS_TOKEN_CLAIMS = [
     'aud', 'iss', 'azp', 'appid', 'idtyp',
     'scp', 'roles', 'sub', 'oid', 'tid',
-    'upn', 'fmi_path',
+    'upn', 'fmi_path', 'exp',
 ];
 
 function buildSummary(step, idToken, isRequestToken, isResponseToken) {
@@ -1326,6 +1326,11 @@ function resolveClaimValue(key, value) {
     const strVal = String(value);
     // scp is a space-separated list of scope names, not GUIDs
     if (key === 'scp') return escapeHtml(strVal);
+    // Timestamp claims — show human-readable UTC alongside epoch
+    if ((key === 'exp' || key === 'iat' || key === 'nbf') && typeof value === 'number') {
+        const utc = new Date(value * 1000).toUTCString();
+        return `<span class="claim-resolved" title="Unix epoch: ${value}">${escapeHtml(utc)}</span>`;
+    }
     // For known IDs, show human-readable label with actual value in parentheses
     if (highlightMap[strVal]) {
         const label = highlightMap[strVal].label;
