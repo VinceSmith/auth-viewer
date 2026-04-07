@@ -618,6 +618,9 @@ async def api_execute(request: Request):
         elif flow_type == "agent_id_autonomous_chain":
             result = await flows.execute_agent_id_autonomous_chain(scope=scope)
 
+        elif flow_type == "agent_ephemeral":
+            result = await flows.execute_agent_ephemeral(scope=scope)
+
         elif flow_type == "agent_id_obo":
             user_token, info_steps = await _resolve_user_token(stored, flow_type, body_token=body.get("user_token", ""))
             if not user_token:

@@ -294,6 +294,38 @@ DIAGRAMS = {
     B->>C: {{ data }}
     end""",
 
+    "agent_ephemeral": f"""sequenceDiagram
+    participant A as Agent System
+    participant G as Intent Gateway
+    participant E as Entra ID
+    participant R as Resource API
+
+    Note over A: Ephemeral Agent — Intent-Scoped Access
+    rect {_S0}
+    Note right of A: Step 1 — Declare Intent
+    A->>G: Declare intent + minimal scope<br/>(task-specific, logged for audit)
+    G->>A: Approved — scope validated
+    end
+    rect {_S1}
+    Note right of A: Step 2 — Parent Token
+    A->>E: POST /token<br/>(grant_type=client_credentials,<br/>client_id=blueprint_app_id,<br/>client_secret=blueprint_secret,<br/>scope=api://AzureADTokenExchange/.default,<br/>fmi_path=agent_identity_id)
+    E->>A: {{ parent_token }}<br/>(aud: api://AzureADTokenExchange)
+    end
+    rect {_S2}
+    Note right of A: Step 3 — Scoped FMI Exchange
+    A->>E: POST /token<br/>(grant_type=client_credentials,<br/>client_id=agent_identity_id,<br/>client_assertion=parent_token,<br/>scope=<declared_scope_only>)
+    E->>A: {{ access_token }}<br/>(minimal scope, time-limited)
+    end
+    rect {_S3}
+    Note right of A: Step 4 — Call Resource
+    A->>R: GET /endpoint<br/>Authorization: Bearer {{access_token}}
+    R->>A: {{ response }}
+    end
+    rect {_S4}
+    Note right of A: Step 5 — Ephemeral Expiry
+    Note over A: Token expires (see exp claim)<br/>Re-issue requires new intent declaration<br/>Closes intent-execution separation gap
+    end""",
+
     "profile_login": f"""sequenceDiagram
     participant U as User / Browser
     participant C as Client App<br/>(auth-viewer)

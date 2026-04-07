@@ -1,5 +1,6 @@
 """Raw REST implementations of all OAuth 2.0 / Entra ID token flows."""
 
+import secrets
 import time as _time
 import logging
 import urllib.parse
@@ -1030,6 +1031,150 @@ async def execute_agent_id_obo(*, user_token: str, scope: str) -> dict:
 
     # Step 6: Call downstream resource (API B / Graph)
     steps.append(await _call_resource_or_skip(obo_result, scope))
+
+    return {
+        "step1": step1_result,
+        "step2": step2_result,
+        "steps": steps,
+    }
+
+
+# ---------------------------------------------------------------------------
+# 9. Agent ID — Ephemeral (intent-scoped, time-limited)
+# ---------------------------------------------------------------------------
+
+async def execute_agent_ephemeral(*, scope: str) -> dict:
+    """Ephemeral Agent ID flow — demonstrates intent-scoped, time-limited access.
+
+    Addresses the 'intent-execution separation problem' by:
+    1. Explicitly declaring the agent's intent before any credentials are issued.
+    2. Requesting only the minimal scope required for the declared task.
+    3. Producing a short-lived token that cannot be renewed without repeating
+       the intent declaration step (i.e., a new approval cycle).
+
+    Step 1: Intent Declaration (gateway check)
+    Step 2: Parent token (Blueprint client_credentials + fmi_path)
+    Step 3: FMI exchange with the minimal declared scope
+    Step 4: Call the resource
+    Step 5: Expiry / governance explanation
+    """
+    _, fetched = await _ensure_oidc_discovery()
+
+    # Strip 'ephemeral:' prefix added by the frontend for routing
+    actual_scope = scope.removeprefix("ephemeral:")
+    resolved_scope = _coerce_default_scope(actual_scope)
+
+    # Step 1: Intent Declaration
+    intent_step = _build_step(
+        label="Declare Agent Intent",
+        description=(
+            "The ephemeral agent pattern starts by declaring intent before any credentials are issued. "
+            "This is the first and most important step in solving the 'intent-execution separation problem': "
+            "the traditional agent pattern issues broad credentials and trusts the agent to self-limit its "
+            "actions — but there is no enforcement mechanism. Here, the agent explicitly states what it "
+            "will do and requests only the permissions needed for that task. "
+            "In a production system, this declaration would be: "
+            "(1) logged for audit, "
+            "(2) reviewed by a human or policy engine before token issuance, "
+            "(3) encoded as the exact scope granted to the resulting token. "
+            "The intent gateway is the approval checkpoint that closes the separation gap."
+        ),
+        request={
+            "method": "INTENT_GATEWAY",
+            "url": "Agent Intent Declaration (pre-token approval gate)",
+            "headers": {},
+            "body": {
+                "agent_id": settings.agent_identity_id or "<agent-identity-id>",
+                "declared_intent": f"Read-only access to {_humanize_scope(actual_scope)}",
+                "requested_scope": resolved_scope,
+                "time_limit": "~1 hour (governed by token exp claim)",
+                "non_renewable": "Token cannot be refreshed — agent must re-declare intent for a new task",
+            },
+        },
+        response={
+            "status": 200,
+            "headers": {},
+            "body": {
+                "approved": True,
+                "granted_scope": resolved_scope,
+                "rationale": "Declared scope is minimal and matches the stated task. Access approved.",
+                "audit_ref": "intent-gate-" + secrets.token_hex(6),
+            },
+        },
+        highlights=_base_highlights(),
+    )
+
+    # Step 2: Parent token
+    step1_result, parent_step = await _acquire_parent_token()
+    steps = ([_oidc_discovery_step()] if fetched else []) + [intent_step, parent_step]
+    parent_token = step1_result["response"]["body"].get("access_token")
+    if not parent_token:
+        steps.append(_build_step(
+            label="FMI Exchange (Failed)",
+            description="Step 2 failed — no parent token acquired.",
+            highlights=_base_highlights(),
+        ))
+        return {"step1": step1_result, "steps": steps}
+
+    # Step 3: Scope-limited FMI exchange
+    step2_result, exchange_step = await _fmi_exchange(
+        parent_token, actual_scope,
+        label="FMI Exchange (Ephemeral — Scope-Limited)",
+    )
+    # Override the description to emphasise scope limitation
+    exchange_step["description"] = (
+        "The Agent Identity exchanges the parent token for a scope-limited access token. "
+        "Unlike a '.default' exchange (which grants all pre-configured app permissions), "
+        f"this exchange requests only the minimal scope declared above: '{resolved_scope}'. "
+        "Entra ID will not issue a token with broader permissions than requested — the agent "
+        "is cryptographically constrained to the declared intent. "
+        "The resulting token also has a finite lifetime (see the 'exp' claim): once it expires, "
+        "the agent must restart from Step 1 and re-declare intent, giving humans another "
+        "opportunity to review, log, or deny the request."
+    )
+    steps.append(exchange_step)
+
+    # Step 4: Call the resource
+    steps.append(await _call_resource_or_skip(step2_result, actual_scope))
+
+    # Step 5: Expiry / governance explanation
+    access_token = step2_result["response"]["body"].get("access_token", "")
+    exp_note = ""
+    if access_token:
+        decoded = decode_jwt(access_token)
+        exp = decoded.get("payload", {}).get("exp")
+        if exp:
+            from datetime import datetime, timezone
+            exp_utc = datetime.fromtimestamp(exp, tz=timezone.utc).strftime("%Y-%m-%d %H:%M:%S UTC")
+            exp_note = f" This token expires at {exp_utc}."
+
+    governance_step = _build_step(
+        label="Ephemeral Governance Summary",
+        description=(
+            "The ephemeral agent pattern enforces four properties that together solve the "
+            "intent-execution separation problem:"
+            "\n\n"
+            "1. Just-In-Time — credentials are issued only when needed, not pre-provisioned. "
+            "There are no long-lived secrets the agent could misuse between tasks."
+            "\n\n"
+            "2. Just-Enough-Privilege — the token scope matches exactly what was declared. "
+            "The agent cannot call APIs or perform actions beyond the approved scope."
+            "\n\n"
+            "3. Time-Bounded — the token expires automatically." + exp_note + " "
+            "The agent cannot silently extend its access by renewing the token."
+            "\n\n"
+            "4. Auditable — every step is logged: the intent declaration, the token request, "
+            "and the resource call. Humans can audit what the agent did and whether it matched "
+            "the declared intent."
+            "\n\n"
+            "Compare this to the standard agent_id_autonomous flow: that flow also uses the "
+            "Blueprint + FMI exchange mechanism, but it requests a broad '.default' scope and "
+            "has no intent declaration step. The ephemeral variant adds the intent gateway "
+            "and scope minimisation on top of the same token-exchange infrastructure."
+        ),
+        highlights=_base_highlights(),
+    )
+    steps.append(governance_step)
 
     return {
         "step1": step1_result,

@@ -205,6 +205,8 @@ const authCategoryRadios = document.querySelectorAll('input[name="auth_category"
 const clientTypeRadios = document.querySelectorAll('input[name="client_type"]');
 const reuseIdCheckbox = document.getElementById('reuse-id-token');
 const reuseIdLabel = document.getElementById('reuse-id-label');
+const ephemeralCheckbox = document.getElementById('ephemeral-mode');
+const ephemeralLabel = document.getElementById('ephemeral-label');
 
 // Step timeline
 const stepTimeline = document.getElementById('step-timeline');
@@ -282,10 +284,15 @@ function isOboScope() {
     return opt?.dataset.obo === '1';
 }
 
+function isEphemeralMode() {
+    return authCategory === 'client_credentials' && clientType === 'agent' && ephemeralCheckbox?.checked;
+}
+
 function getEffectiveFlowType() {
     if (authCategory === 'client_credentials') {
         const scope = getScope();
         if (clientType === 'agent') {
+            if (isEphemeralMode()) return 'agent_ephemeral';
             if (scope.startsWith('chain:')) return 'agent_id_autonomous_chain';
             return 'agent_id_autonomous';
         }
@@ -308,11 +315,17 @@ function getDiagramKey() {
 }
 
 function getScope() {
-    return scopeSelect.value;
+    // For ephemeral mode, prefix the scope so the backend routes to execute_agent_ephemeral
+    const raw = scopeSelect.value;
+    if (isEphemeralMode() && !raw.startsWith('ephemeral:') && !raw.startsWith('chain:')) {
+        return 'ephemeral:' + raw;
+    }
+    return raw;
 }
 
 function updateFlowUI() {
     const isUserAuth = authCategory === 'user_auth';
+    const isAgentCC = authCategory === 'client_credentials' && clientType === 'agent';
 
     // Client type: always enabled (no locking)
     for (const radio of clientTypeRadios) {
@@ -321,6 +334,9 @@ function updateFlowUI() {
 
     // Stored ID token option: show for user_auth only
     reuseIdLabel.style.display = isUserAuth ? '' : 'none';
+
+    // Ephemeral mode option: show only for Client Credentials + Agent
+    if (ephemeralLabel) ephemeralLabel.style.display = isAgentCC ? '' : 'none';
 
     // Filter scope options by context
     let firstVisible = null;
@@ -366,6 +382,11 @@ clientTypeRadios.forEach(radio => {
 scopeSelect.addEventListener('change', () => {
     updateFlowUI();
     updateSessionStatus();
+});
+
+ephemeralCheckbox?.addEventListener('change', () => {
+    updateFlowUI();
+    loadDiagram(getDiagramKey());
 });
 
 reuseIdCheckbox?.addEventListener('change', () => {
@@ -1950,6 +1971,9 @@ document.addEventListener('DOMContentLoaded', async () => {
                     authCategory = 'client_credentials'; clientType = 'app';
                 } else if (ft === 'agent_id_autonomous' || ft === 'agent_id_autonomous_chain') {
                     authCategory = 'client_credentials'; clientType = 'agent';
+                } else if (ft === 'agent_ephemeral') {
+                    authCategory = 'client_credentials'; clientType = 'agent';
+                    if (ephemeralCheckbox) ephemeralCheckbox.checked = true;
                 } else if (ft === 'obo') {
                     authCategory = 'user_auth'; clientType = 'app';
                 } else if (ft === 'agent_id_obo') {
