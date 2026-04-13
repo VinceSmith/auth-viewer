@@ -296,7 +296,7 @@ function getEffectiveFlowType() {
     }
     // user_auth
     const obo = isOboScope();
-    if (clientType === 'agent') return obo ? 'agent_id_obo' : 'auth_code';
+    if (clientType === 'agent') return 'agent_id_obo';
     return obo ? 'obo' : 'auth_code';
 }
 
@@ -789,7 +789,7 @@ btnExecute.addEventListener('click', async () => {
 
         // Full redirect through Entra /authorize
         const promptParam = reuseIdCheckbox?.checked ? '' : '&prompt=login';
-        if (isOboScope()) {
+        if (isOboScope() || clientType === 'agent') {
             window.location.href = `/auth/login?flow_type=${flowType}&target_scope=${encodeURIComponent(scope)}${promptParam}`;
         } else {
             window.location.href = `/auth/login?scope=${encodeURIComponent(scope)}${promptParam}`;
