@@ -198,6 +198,7 @@
         <div class="debug-pane" id="debug-pane">
             <!-- Step Timeline -->
             <div class="step-timeline" id="step-timeline" style="display:none">
+                <div class="step-context-banner" id="step-context-banner" style="display:none"></div>
                 <div class="step-timeline-row">
                     <button class="step-nav" id="btn-step-prev" title="Previous step (←)">◀</button>
                     <div class="step-pills" id="step-pills"></div>
@@ -290,6 +291,21 @@
                             <h4 class="section-heading">HTTP Response</h4>
                             <pre id="resp-display" class="code-block"></pre>
                         </section>
+                        <section class="detail-section" id="section-resp-id-token" style="display:none">
+                            <h4 class="section-heading">ID Token (returned in response)</h4>
+                            <div class="token-subsection">
+                                <h5>Decoded Header</h5>
+                                <pre id="resp-id-header" class="code-block"></pre>
+                            </div>
+                            <div class="token-subsection">
+                                <h5>Decoded Payload</h5>
+                                <pre id="resp-id-payload" class="code-block"></pre>
+                            </div>
+                            <div class="token-subsection">
+                                <h5>Raw Token</h5>
+                                <textarea id="resp-id-raw" class="code-block raw-token" readonly></textarea>
+                            </div>
+                        </section>
                         <section class="detail-section" id="section-resp-token" style="display:none">
                             <h4 class="section-heading">Access Token (returned in response)</h4>
                             <div class="token-subsection">
@@ -329,5 +345,5 @@
 {% endblock %}
 
 {% block scripts %}
-<script src="/static/app.js"></script>
+<script src="/static/app.js?v={{ cache_bust }}"></script>
 {% endblock %}

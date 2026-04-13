@@ -299,7 +299,7 @@ DIAGRAMS = {
     participant C as Client App<br/>(auth-viewer)
     participant E as Entra ID
 
-    Note over C: Sign-In — Acquire ID Token
+    Note over C: Session Bootstrap — OpenID Connect Sign-In
     rect {_S0}
     Note right of C: Step 1 — Authorize
     U->>C: Open app

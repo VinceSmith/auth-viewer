@@ -6,6 +6,7 @@ let clientType = 'app';            // 'app' | 'agent'
 let diagramCounter = 0;
 let currentSteps = [];
 let currentStepIndex = 0;
+let currentFlowType = '';
 let highlightMap = {};
 let diagramStepRects = [];
 
@@ -208,6 +209,7 @@ const reuseIdLabel = document.getElementById('reuse-id-label');
 
 // Step timeline
 const stepTimeline = document.getElementById('step-timeline');
+const stepContextBanner = document.getElementById('step-context-banner');
 const stepPills = document.getElementById('step-pills');
 const stepDescription = document.getElementById('step-description');
 const btnStepPrev = document.getElementById('btn-step-prev');
@@ -294,7 +296,7 @@ function getEffectiveFlowType() {
     }
     // user_auth
     const obo = isOboScope();
-    if (clientType === 'agent') return 'agent_id_obo';
+    if (clientType === 'agent') return obo ? 'agent_id_obo' : 'auth_code';
     return obo ? 'obo' : 'auth_code';
 }
 
@@ -480,6 +482,9 @@ function setSteps(steps) {
     currentSteps = steps || [];
     currentStepIndex = 0;
 
+    // Hide context banner when switching to a new flow
+    if (stepContextBanner) stepContextBanner.style.display = 'none';
+
     if (currentSteps.length === 0) {
         stepTimeline.style.display = 'none';
         detailTabs.style.display = 'none';
@@ -618,6 +623,18 @@ function populateStepDetail(step) {
         document.getElementById('tab-response-empty').style.display = 'block';
     }
 
+    // ID token on response tab (only for profile_login Token Exchange)
+    const sectionRespIdToken = document.getElementById('section-resp-id-token');
+    const stepIdToken = tokens.id_token;
+    if (currentFlowType === 'profile_login' && stepIdToken?.payload && isResponseToken) {
+        sectionRespIdToken.style.display = 'block';
+        setHighlightedHtml('resp-id-header', formatJson(stepIdToken.header));
+        setHighlightedHtml('resp-id-payload', formatJson(stepIdToken.payload));
+        document.getElementById('resp-id-raw').value = stepIdToken.raw || '';
+    } else {
+        sectionRespIdToken.style.display = 'none';
+    }
+
     // Access token on response tab (token returned in the response)
     if (isResponseToken) {
         sectionRespToken.style.display = 'block';
@@ -711,6 +728,7 @@ function setHighlightedHtml(id, text) {
 
 btnExecute.addEventListener('click', async () => {
     const flowType = getEffectiveFlowType();
+    currentFlowType = flowType;
     const scope = getScope();
 
     // Close flyout on execute
@@ -1167,6 +1185,11 @@ const SUMMARY_ACCESS_TOKEN_CLAIMS = [
     'upn', 'fmi_path', 'exp',
 ];
 
+const SUMMARY_ID_TOKEN_CLAIMS = [
+    'sub', 'name', 'preferred_username', 'email',
+    'oid', 'tid', 'iss', 'aud', 'nonce', 'exp',
+];
+
 function buildSummary(step, idToken, isRequestToken, isResponseToken) {
     const req = step.request;
     const resp = step.response;
@@ -1256,6 +1279,9 @@ function buildSummary(step, idToken, isRequestToken, isResponseToken) {
             html += `<pre class="code-block">${escapeHtml(detail)}</pre>`;
         }
         // Show key claims from the access token returned in the response
+        if (currentFlowType === 'profile_login' && tokens.id_token?.payload) {
+            html += buildClaimsSection('ID Token Claims', tokens.id_token.payload, SUMMARY_ID_TOKEN_CLAIMS);
+        }
         if (isResponseToken && tokens.access_token?.payload) {
             html += buildClaimsSection('Access Token Claims', tokens.access_token.payload, SUMMARY_ACCESS_TOKEN_CLAIMS);
         }
@@ -1937,6 +1963,13 @@ document.addEventListener('DOMContentLoaded', async () => {
         const data = await resp.json();
         if (data.result) {
             const result = data.result;
+            // Show context banner (e.g. Session Bootstrap explanation)
+            if (result.context && stepContextBanner) {
+                stepContextBanner.textContent = result.context;
+                stepContextBanner.style.display = '';
+            } else if (stepContextBanner) {
+                stepContextBanner.style.display = 'none';
+            }
             if (result.steps && result.steps.length > 0) {
                 setSteps(result.steps);
             } else {
@@ -1945,6 +1978,7 @@ document.addEventListener('DOMContentLoaded', async () => {
             if (data.diagram) await renderMermaid(data.diagram);
             // Restore composite controls from the returned flow_type
             if (data.flow_type) {
+                currentFlowType = data.flow_type;
                 const ft = data.flow_type;
                 if (ft === 'client_credentials' || ft === 'client_credentials_chain') {
                     authCategory = 'client_credentials'; clientType = 'app';
@@ -1954,6 +1988,8 @@ document.addEventListener('DOMContentLoaded', async () => {
                     authCategory = 'user_auth'; clientType = 'app';
                 } else if (ft === 'agent_id_obo') {
                     authCategory = 'user_auth'; clientType = 'agent';
+                } else if (ft === 'profile_login') {
+                    authCategory = 'user_auth'; clientType = 'app';
                 } else {
                     authCategory = 'user_auth'; clientType = 'app';
                 }
@@ -1973,7 +2009,12 @@ document.addEventListener('DOMContentLoaded', async () => {
                     }
                 }
                 updateSessionStatus();
-                updateDiagramHeader();
+                if (ft === 'profile_login') {
+                    diagramHeader.textContent = 'Session Bootstrap — OpenID Connect Sign-In';
+                    diagramHeader.style.display = '';
+                } else {
+                    updateDiagramHeader();
+                }
             }
             if (currentSteps.length > 0) highlightDiagramStep(currentStepIndex);
 

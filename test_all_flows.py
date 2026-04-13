@@ -148,16 +148,19 @@ def test_client_credentials():
     data = execute({"flow_type": "client_credentials", "scope": f"api://{API_A_APP_ID}/.default"})
     result = data.get("result", {})
     steps = result.get("steps", [])
-    check("API A — has 3 steps", len(steps) == 3, f"got {len(steps)}")
-    if steps:
-        p = get_token_payload(result, 1)
+    # 2 steps when OIDC discovery is cached, 3 when freshly fetched
+    check("API A — has 2-3 steps", len(steps) in (2, 3), f"got {len(steps)}")
+    # Find the Client Credentials step (index depends on OIDC discovery cache)
+    cc_idx = next((i for i, s in enumerate(steps) if s.get("label") == "Client Credentials"), -1)
+    if cc_idx >= 0:
+        p = get_token_payload(result, cc_idx)
         check("API A — aud correct", p.get("aud") == API_A_APP_ID, f"aud={p.get('aud')}")
         check("API A — v2.0 token", p.get("ver") == "2.0", f"ver={p.get('ver')}")
         check("API A — has roles claim", bool(p.get("roles")), f"roles={p.get('roles')}")
         check("API A — access_as_app in roles",
               "access_as_app" in (p.get("roles") or []),
               f"roles={p.get('roles')}")
-        check("API A — no error", "error" not in get_step_response(result, 1))
+        check("API A — no error", "error" not in get_step_response(result, cc_idx))
 
     # Graph
     data = execute({"flow_type": "client_credentials", "scope": "https://graph.microsoft.com/.default"})
@@ -682,6 +685,117 @@ def test_agent_id_obo_via_api(user_token: str):
         check("OBO exchange — no error", "error" not in resp, f"error={resp.get('error', 'N/A')}")
 
 
+def test_scope_switching(refresh_token: str, api_a_token: str):
+    """Test that switching target resource after sign-in gets the right token.
+
+    This is the class of bug where a cached token for API A gets reused
+    when the user switches to API B (or vice versa), causing 401 errors.
+    Tests all delegated flows: auth_code, obo, agent_id_obo.
+    """
+    section("Scope-Switching (audience validation)")
+
+    # Acquire tokens for each scope via refresh_token exchange
+    api_b_token = _acquire_token_for_scope(refresh_token, f"api://{API_B_APP_ID}/read")
+    graph_token = _acquire_token_for_scope(refresh_token, "https://graph.microsoft.com/User.Read")
+    check("Acquired API B token", bool(api_b_token))
+    check("Acquired Graph token", bool(graph_token))
+
+    # ── Auth Code: call API A with API A token ──
+    data = execute({
+        "flow_type": "auth_code",
+        "scope": f"api://{API_A_APP_ID}/access_as_user",
+        "user_token": api_a_token,
+    })
+    steps = data.get("result", data).get("steps", [])
+    call_step = next((s for s in steps if s.get("response", {}).get("status")), None)
+    status_a = call_step["response"]["status"] if call_step else 0
+    check("Auth Code → API A returns 200", status_a == 200, f"status={status_a}")
+
+    # ── Auth Code: switch to API B (pass API B token so aud matches) ──
+    data = execute({
+        "flow_type": "auth_code",
+        "scope": f"api://{API_B_APP_ID}/read",
+        "user_token": api_b_token,
+    })
+    steps = data.get("result", data).get("steps", [])
+    call_step = next((s for s in steps if s.get("response", {}).get("status")), None)
+    status_b = call_step["response"]["status"] if call_step else 0
+    check("Auth Code → API B returns 200 (not 401)", status_b == 200, f"status={status_b}")
+
+    if call_step:
+        tok = call_step.get("tokens", {}).get("access_token", {})
+        aud = tok.get("payload", {}).get("aud", "")
+        check("Auth Code → API B token aud is API B",
+              aud == API_B_APP_ID,
+              f"aud={aud}")
+
+    # ── Auth Code: switch back to API A ──
+    data = execute({
+        "flow_type": "auth_code",
+        "scope": f"api://{API_A_APP_ID}/access_as_user",
+        "user_token": api_a_token,
+    })
+    steps = data.get("result", data).get("steps", [])
+    call_step = next((s for s in steps if s.get("response", {}).get("status")), None)
+    status_a2 = call_step["response"]["status"] if call_step else 0
+    check("Auth Code → API A again returns 200", status_a2 == 200, f"status={status_a2}")
+
+    # ── Auth Code: switch to Graph ──
+    data = execute({
+        "flow_type": "auth_code",
+        "scope": "https://graph.microsoft.com/User.Read",
+        "user_token": graph_token,
+    })
+    steps = data.get("result", data).get("steps", [])
+    call_step = next((s for s in steps if s.get("response", {}).get("status")), None)
+    status_graph = call_step["response"]["status"] if call_step else 0
+    check("Auth Code → Graph returns 200", status_graph == 200, f"status={status_graph}")
+
+    # ── OBO: target API B (OBO always needs API A token, goes through API A) ──
+    data = execute({
+        "flow_type": "obo",
+        "scope": f"api://{API_B_APP_ID}/.default",
+        "user_token": api_a_token,
+    })
+    steps = data.get("result", data).get("steps", [])
+    call_b_step = next((s for s in reversed(steps) if "Call API B" in s.get("label", "")), None)
+    obo_status = call_b_step["response"]["status"] if call_b_step else 0
+    check("OBO → API B returns 200", obo_status == 200, f"status={obo_status}")
+
+    # ── OBO: target Graph ──
+    data = execute({
+        "flow_type": "obo",
+        "scope": "https://graph.microsoft.com/.default",
+        "user_token": api_a_token,
+    })
+    steps = data.get("result", data).get("steps", [])
+    call_graph_step = next((s for s in reversed(steps) if "Graph" in s.get("label", "")), None)
+    obo_graph_status = call_graph_step["response"]["status"] if call_graph_step else 0
+    check("OBO → Graph returns 200", obo_graph_status == 200, f"status={obo_graph_status}")
+
+    # ── Agent ID OBO: target API A (should NOT attempt OBO from API A to API A) ──
+    if AGENT_BLUEPRINT_APP_ID:
+        blueprint_token = _acquire_token_for_scope(
+            refresh_token, f"api://{AGENT_BLUEPRINT_APP_ID}/access_as_user")
+        if blueprint_token:
+            data = execute({
+                "flow_type": "agent_id_obo",
+                "scope": f"api://{API_A_APP_ID}/access_as_user",
+                "user_token": blueprint_token,
+            })
+            steps = data.get("result", data).get("steps", [])
+            labels = [s.get("label", "") for s in steps]
+            has_self_obo = any("OBO Token Exchange" in l and "Skipped" not in l for l in labels)
+            check("Agent ID OBO → API A has no self-referential OBO",
+                  not has_self_obo,
+                  f"steps: {labels}")
+            call_a_step = next((s for s in reversed(steps) if "Call API A" in s.get("label", "")), None)
+            agent_a_status = call_a_step["response"]["status"] if call_a_step else 0
+            check("Agent ID OBO → API A returns 200", agent_a_status == 200, f"status={agent_a_status}")
+        else:
+            check("Skipped — could not acquire Blueprint token", False)
+
+
 # ══════════════════════════════════════════════════════════════
 # Main
 # ══════════════════════════════════════════════════════════════
@@ -736,6 +850,7 @@ def main():
     # Auth Code → verify the original bug is fixed
     raw_tokens = test_auth_code()
     user_token = raw_tokens.get("access_token", "")
+    refresh_token = raw_tokens.get("refresh_token", "")
 
     # OBO using the Auth Code token (tests backend OBO logic)
     if user_token:
@@ -743,7 +858,6 @@ def main():
 
         # Agent ID OBO needs a token scoped to the Blueprint (not API A).
         # Exchange the refresh token for a Blueprint-scoped access token.
-        refresh_token = raw_tokens.get("refresh_token", "")
         blueprint_token = ""
         if AGENT_BLUEPRINT_APP_ID and refresh_token:
             blueprint_scope = f"api://{AGENT_BLUEPRINT_APP_ID}/access_as_user"
@@ -764,6 +878,14 @@ def main():
     # Self-contained Agent ID OBO chain (browser redirect)
     pause("Press Enter to test Agent ID OBO redirect chain...")
     test_agent_id_obo_redirect()
+
+    # Scope-switching regression tests (requires active session from Auth Code above)
+    pause("Press Enter to test scope-switching scenarios...")
+    if user_token and refresh_token:
+        test_scope_switching(refresh_token, user_token)
+    else:
+        section("Scope-Switching (audience validation)")
+        check("Skipped — no user/refresh token from Auth Code", False)
 
     # Summary
     print(f"\n{'═' * 60}")

@@ -1011,25 +1011,30 @@ async def execute_agent_id_obo(*, user_token: str, scope: str) -> dict:
     steps.append(await _call_resource(access_token=api_a_token, scope=api_a_scope))
 
     # Step 5: OBO exchange — API A exchanges agent's token for downstream (API B)
-    obo_result = await _obo_token_exchange(assertion=api_a_token, scope=scope)
+    # If the target scope is API A itself, there's no downstream — just stop here.
+    api_a_scope_id = settings.api_a_app_id or ""
+    if api_a_scope_id and api_a_scope_id in scope:
+        pass  # API A is the final target — no OBO needed, flow is complete
+    else:
+        obo_result = await _obo_token_exchange(assertion=api_a_token, scope=scope)
 
-    agent_obo_body = obo_result.get("response", {}).get("body", {})
-    agent_obo_at = agent_obo_body.get("access_token", "")
-    agent_obo_payload = decode_jwt(agent_obo_at).get("payload", {}) if agent_obo_at else {}
-    obo_step = _result_to_step(
-        obo_result,
-        label="OBO Token Exchange",
-        description="API A exchanges the agent's token for a downstream token. "
-                    "It authenticates as itself (client_id + client_secret) and "
-                    "presents the agent's API A token as an assertion. Entra issues "
-                    "a new token where the audience switches to the downstream API, "
-                    "but the user's identity is preserved."
-                    + _user_read_note(agent_obo_payload),
-    )
-    steps.append(obo_step)
+        agent_obo_body = obo_result.get("response", {}).get("body", {})
+        agent_obo_at = agent_obo_body.get("access_token", "")
+        agent_obo_payload = decode_jwt(agent_obo_at).get("payload", {}) if agent_obo_at else {}
+        obo_step = _result_to_step(
+            obo_result,
+            label="OBO Token Exchange",
+            description="API A exchanges the agent's token for a downstream token. "
+                        "It authenticates as itself (client_id + client_secret) and "
+                        "presents the agent's API A token as an assertion. Entra issues "
+                        "a new token where the audience switches to the downstream API, "
+                        "but the user's identity is preserved."
+                        + _user_read_note(agent_obo_payload),
+        )
+        steps.append(obo_step)
 
-    # Step 6: Call downstream resource (API B / Graph)
-    steps.append(await _call_resource_or_skip(obo_result, scope))
+        # Step 6: Call downstream resource (API B / Graph)
+        steps.append(await _call_resource_or_skip(obo_result, scope))
 
     return {
         "step1": step1_result,

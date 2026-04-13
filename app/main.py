@@ -57,11 +57,34 @@ def _is_token_expired(token: str) -> bool:
     return False
 
 
+def _aud_from_scope(scope: str) -> str:
+    """Extract the expected audience (app ID) from a scope string.
+
+    Maps scope patterns like 'api://<app_id>/...' or 'https://graph.microsoft.com/...'
+    to the audience value that will appear in the token's 'aud' claim.
+    """
+    for part in scope.split():
+        if part.startswith("api://"):
+            # api://<app_id>/access_as_user → app_id
+            segments = part[len("api://"):].split("/")
+            if segments:
+                return segments[0]
+        if part.startswith("https://graph.microsoft.com"):
+            return "https://graph.microsoft.com"
+    # Check against known app IDs in the scope string
+    for app_id in [settings.api_a_app_id, settings.api_b_app_id, settings.client_id]:
+        if app_id and app_id in scope:
+            return app_id
+    return ""
+
+
 # Per-flow audience + scope mapping for delegated flows
 _FLOW_TOKEN_CONFIG: dict[str, dict] = {
     "auth_code": {
         "store_keys": ["auth_code"],
-        # No audience validation needed — auth_code just calls whatever scope was requested
+        # Audience validation is dynamic — derived from the requested scope at call time.
+        # Set by _resolve_user_token when scope_hint is provided.
+        "silent_scope_from_hint": True,  # use scope_hint for silent acquire
     },
     "obo": {
         "store_keys": ["obo", "auth_code"],
@@ -77,18 +100,26 @@ _FLOW_TOKEN_CONFIG: dict[str, dict] = {
 
 
 async def _resolve_user_token(
-    stored: dict, flow_type: str, *, body_token: str = "",
+    stored: dict, flow_type: str, *, body_token: str = "", scope_hint: str = "",
 ) -> tuple[str, list[dict]]:
     """Resolve a valid user token for a delegated flow.
 
     Returns (token, info_steps) where info_steps may include cache-hit,
     audience-mismatch, or silent-acquire steps for the UI.
+
+    *scope_hint* — the requested scope (used by auth_code to derive the
+    expected audience dynamically).
     """
     config = _FLOW_TOKEN_CONFIG.get(flow_type, {})
     store_keys = config.get("store_keys", ["auth_code"])
     info_steps: list[dict] = []
 
     aud_fn = config.get("expected_aud")
+    # For auth_code, derive expected audience from the requested scope
+    if not aud_fn and scope_hint:
+        expected = _aud_from_scope(scope_hint)
+        if expected:
+            aud_fn = lambda _e=expected: _e
     aud_names = {
         settings.api_a_app_id: "API A",
         settings.api_b_app_id: "API B",
@@ -150,6 +181,10 @@ async def _resolve_user_token(
                 if rt:
                     break
         scope_fn = config.get("silent_scope")
+        # For auth_code, derive silent scope from the scope_hint (the user's requested scope)
+        if not scope_fn and config.get("silent_scope_from_hint") and scope_hint:
+            silent_scope_val = f"openid profile {scope_hint}" if "openid" not in scope_hint else scope_hint
+            scope_fn = lambda _s=silent_scope_val: _s
         if rt and scope_fn:
             scope = scope_fn()
             if scope:
@@ -262,6 +297,7 @@ async def index(request: Request):
     return templates.TemplateResponse(request, "index.html", {
         "settings": settings,
         "flow_types": list(DIAGRAMS.keys()),
+        "cache_bust": int(_time.time()),
     })
 
 
@@ -363,6 +399,7 @@ async def auth_callback(request: Request, code: str = "", state: str = "", error
         return templates.TemplateResponse(request, "index.html", {
             "settings": settings,
             "flow_types": list(DIAGRAMS.keys()),
+            "cache_bust": int(_time.time()),
             "error": f"{error}: {error_description}",
         })
 
@@ -387,6 +424,7 @@ async def auth_callback(request: Request, code: str = "", state: str = "", error
             return templates.TemplateResponse(request, "index.html", {
                 "settings": settings,
                 "flow_types": list(DIAGRAMS.keys()),
+                "cache_bust": int(_time.time()),
                 "error": f"State mismatch: expected {expected_state!r}, got {state!r}. "
                           "This usually means another sign-in was started (second tab, "
                           "double-click) before this one completed.",
@@ -532,21 +570,19 @@ async def auth_callback(request: Request, code: str = "", state: str = "", error
 
     # For profile-only logins (no resource scope), store result but redirect to home
     if not has_resource_scope:
-        # Add a bootstrap explanation step so the user understands what just happened
-        bootstrap_step = flows._build_step(
-            label="Session Bootstrap",
-            description="This Auth Code flow was triggered automatically to establish your session. "
-                        "The scopes 'openid profile offline_access' make this an OpenID Connect "
-                        "authentication request — it authenticates the user, not authorize access "
-                        "to a resource. Entra ID still returns an access token alongside the ID "
-                        "token because it auto-grants the Graph User.Read scope to all "
-                        "confidential clients, even when only OIDC scopes are requested. "
-                        "The 'offline_access' scope also returns a "
-                        "refresh token, which can silently acquire access tokens for any API the "
-                        "client has permission to access — without another sign-in.",
-            highlights=flows._base_highlights(),
+        # Store bootstrap explanation as context (not a step) so it doesn't
+        # break 1:1 mapping between step pills and sequence diagram rects.
+        result["context"] = (
+            "This Auth Code flow was triggered automatically to establish your session. "
+            "The scopes 'openid profile offline_access' make this an OpenID Connect "
+            "authentication request — it authenticates the user, not authorize access "
+            "to a resource. Entra ID still returns an access token alongside the ID "
+            "token because it auto-grants the Graph User.Read scope to all "
+            "confidential clients, even when only OIDC scopes are requested. "
+            "The 'offline_access' scope also returns a "
+            "refresh token, which can silently acquire access tokens for any API the "
+            "client has permission to access — without another sign-in."
         )
-        result["steps"] = [bootstrap_step] + result.get("steps", [])
         result_id = secrets.token_urlsafe(16)
         _result_store[result_id] = {"result": result, "flow_type": "profile_login"}
         request.session["result_id"] = result_id
@@ -588,7 +624,7 @@ async def api_execute(request: Request):
         stored = _token_store.get(sid, {})
 
         if flow_type == "auth_code":
-            user_token, info_steps = await _resolve_user_token(stored, flow_type, body_token=body.get("user_token", ""))
+            user_token, info_steps = await _resolve_user_token(stored, flow_type, body_token=body.get("user_token", ""), scope_hint=scope)
             if not user_token:
                 return JSONResponse({"error": "No user token available. Sign in first."}, status_code=400)
             if _is_token_expired(user_token):

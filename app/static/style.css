@@ -231,6 +231,17 @@ body {
     flex-shrink: 0;
 }
 
+.step-context-banner {
+    font-size: 0.82rem;
+    line-height: 1.45;
+    color: #8ec8e8;
+    background: rgba(30, 60, 80, 0.35);
+    border: 1px solid rgba(78, 195, 247, 0.25);
+    border-radius: 6px;
+    padding: 8px 12px;
+    margin-bottom: 8px;
+}
+
 .step-timeline-row {
     display: flex;
     align-items: center;
