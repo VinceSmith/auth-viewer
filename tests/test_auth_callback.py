@@ -4,8 +4,10 @@ import base64
 import json
 from unittest.mock import AsyncMock, patch
 
+from itsdangerous import TimestampSigner
 from starlette.testclient import TestClient
 
+from app.config import settings
 from app.main import app, _token_store
 from tests.conftest import FAKE_SID, FAKE_API_A_ID, make_session_cookie, make_jwt
 
@@ -51,10 +53,6 @@ def _success_result(access_token: str, id_token: str) -> dict:
     }
 
 
-def _clear_sid():
-    _token_store.pop(FAKE_SID, None)
-
-
 # ---------------------------------------------------------------------------
 # Tests
 # ---------------------------------------------------------------------------
@@ -82,7 +80,6 @@ def test_callback_stores_tokens_in_token_store():
     api_scope = f"api://{FAKE_API_A_ID}/access_as_user"
     cookie = _base_cookie(api_scope)
 
-    _clear_sid()
     client = TestClient(app, raise_server_exceptions=False)
 
     resource_step = {"label": "Resource Call", "request": {}, "response": {}, "token": None}
@@ -106,7 +103,6 @@ def test_callback_stores_user_profile():
     access_token, id_token = _make_tokens()
     result = _success_result(access_token, id_token)
 
-    _clear_sid()
     client = TestClient(app, raise_server_exceptions=False)
 
     with patch("app.main.flows.exchange_auth_code", new_callable=AsyncMock) as mock_ex:
@@ -136,6 +132,7 @@ def test_callback_state_mismatch_returns_error_page():
 
     assert resp.status_code == 200, "State mismatch should render an error page (200), not redirect"
     assert "location" not in resp.headers
+    assert "state" in resp.text.lower() or "mismatch" in resp.text.lower() or "error" in resp.text.lower()
 
 
 def test_callback_entra_error_param_renders_error_page():
@@ -192,9 +189,6 @@ def test_callback_sets_last_flow_in_session():
         )
 
     assert resp.status_code == 303
-
-    from itsdangerous import TimestampSigner
-    from app.config import settings
 
     raw_cookie = resp.cookies.get("session", "")
     signer = TimestampSigner(settings.session_secret)

@@ -67,13 +67,16 @@ def patch_settings(monkeypatch):
 
 @pytest.fixture(autouse=True)
 def clear_module_caches():
-    """Clear module-level caches in flows.py before and after every test."""
+    """Clear module-level caches in flows.py and main.py before and after every test."""
     from app.auth import flows
+    from app.main import _token_store
 
     flows._oidc_cache.clear()
     flows._graph_cc_cache.update({"access_token": "", "expires_at": 0.0})
+    _token_store._data.pop(FAKE_SID, None)
     yield
     flows._oidc_cache.clear()
+    _token_store._data.pop(FAKE_SID, None)
 
 
 def make_mock_response(status_code: int, json_data: dict) -> MagicMock:
