@@ -768,14 +768,10 @@ async def api_execute(request: Request, body: ExecuteRequest):
             result = await flows.execute_client_credentials_chain(scope=scope)
 
         elif flow_type == "obo":
-            user_token, info_steps = await _resolve_user_token(stored, flow_type, body_token=body.user_token)
-            if not user_token:
-                return JSONResponse({"error": "No user token available. Run Auth Code flow first."}, status_code=400)
-            if _is_token_expired(user_token):
-                return JSONResponse({"error": "token_expired", "message": "Your access token has expired. Please sign in again."}, status_code=400)
-            result = await flows.execute_obo(user_access_token=user_token, scope=scope)
-            if info_steps:
-                result.setdefault("steps", [])[:0] = info_steps
+            result = await _run_delegated_flow(
+                stored, "obo",
+                lambda token: flows.execute_obo(user_access_token=token, scope=scope),
+            )
 
         elif flow_type == "agent_id_autonomous":
             result = await flows.execute_agent_id_autonomous(scope=scope)
@@ -784,18 +780,16 @@ async def api_execute(request: Request, body: ExecuteRequest):
             result = await flows.execute_agent_id_autonomous_chain(scope=scope)
 
         elif flow_type == "agent_id_obo":
-            user_token, info_steps = await _resolve_user_token(stored, flow_type, body_token=body.user_token)
-            if not user_token:
-                return JSONResponse({"error": "No user token available. Run Auth Code flow first."}, status_code=400)
-            if _is_token_expired(user_token):
-                return JSONResponse({"error": "token_expired", "message": "Your access token has expired. Please sign in again."}, status_code=400)
-            result = await flows.execute_agent_id_obo(user_token=user_token, scope=scope)
-            if info_steps:
-                result.setdefault("steps", [])[:0] = info_steps
+            result = await _run_delegated_flow(
+                stored, "agent_id_obo",
+                lambda token: flows.execute_agent_id_obo(user_token=token, scope=scope),
+            )
 
         else:
             return JSONResponse({"error": f"Unknown flow type: {flow_type}"}, status_code=400)
 
+    except _FlowError as fe:
+        return JSONResponse(fe.body, status_code=fe.status_code)
     except Exception as e:
         return JSONResponse({"error": str(e)}, status_code=500)
 
