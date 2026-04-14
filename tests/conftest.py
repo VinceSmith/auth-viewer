@@ -74,9 +74,11 @@ def clear_module_caches():
     flows._oidc_cache.clear()
     flows._graph_cc_cache.update({"access_token": "", "expires_at": 0.0})
     _token_store._data.pop(FAKE_SID, None)
+    _token_store._expires.pop(FAKE_SID, None)
     yield
     flows._oidc_cache.clear()
     _token_store._data.pop(FAKE_SID, None)
+    _token_store._expires.pop(FAKE_SID, None)
 
 
 def make_mock_response(status_code: int, json_data: dict) -> MagicMock:

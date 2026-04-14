@@ -60,12 +60,12 @@ def test_obo_uses_api_a_token_not_api_b_token(client):
             cookies={"session": _cookie("obo")},
         )
 
-    if mock_obo.called:
-        received_token = mock_obo.call_args.kwargs.get(
-            "user_access_token", mock_obo.call_args.args[0] if mock_obo.call_args.args else ""
-        )
-        assert received_token != _api_b_token(), "API-B token must not reach execute_obo"
-    # If not called → correct (no valid token found)
+    # API-B token has wrong audience — execute_obo must NOT be called
+    assert not mock_obo.called, (
+        "BUG: execute_obo was called despite token having wrong audience (API-B instead of API-A). "
+        "State bleeding detected."
+    )
+    assert resp.status_code == 400
 
 
 # ── Test 2 ────────────────────────────────────────────────────────────────────
@@ -77,17 +77,18 @@ def test_obo_does_not_use_agent_id_obo_token(client):
 
     with patch("app.main.flows.execute_obo", new_callable=AsyncMock) as mock_obo:
         mock_obo.return_value = MOCK_STEP
-        client.post(
+        resp = client.post(
             "/api/execute",
             json={"flow_type": "obo", "scope": f"api://{FAKE_API_A_ID}/access_as_user"},
             cookies={"session": _cookie("obo")},
         )
 
-    if mock_obo.called:
-        received_token = mock_obo.call_args.kwargs.get(
-            "user_access_token", mock_obo.call_args.args[0] if mock_obo.call_args.args else ""
-        )
-        assert received_token != _blueprint_token(), "Blueprint token must not reach execute_obo"
+    # OBO store_keys don't include agent_id_obo slot — execute_obo must NOT be called
+    assert not mock_obo.called, (
+        "BUG: execute_obo was called despite no valid OBO token being seeded. "
+        "State bleeding from agent_id_obo slot detected."
+    )
+    assert resp.status_code == 400
 
 
 # ── Test 3 ────────────────────────────────────────────────────────────────────
@@ -99,17 +100,17 @@ def test_agent_id_obo_does_not_use_obo_token(client):
 
     with patch("app.main.flows.execute_agent_id_obo", new_callable=AsyncMock) as mock_agent_obo:
         mock_agent_obo.return_value = MOCK_STEP
-        client.post(
+        resp = client.post(
             "/api/execute",
             json={"flow_type": "agent_id_obo", "scope": f"api://{FAKE_BLUEPRINT_ID}/access_as_user"},
             cookies={"session": _cookie("agent_id_obo")},
         )
 
-    if mock_agent_obo.called:
-        received_token = mock_agent_obo.call_args.kwargs.get(
-            "user_token", mock_agent_obo.call_args.args[0] if mock_agent_obo.call_args.args else ""
-        )
-        assert received_token != _api_a_token(), "API-A token must not reach execute_agent_id_obo"
+    assert not mock_agent_obo.called, (
+        "BUG: execute_agent_id_obo was called despite no valid token being seeded. "
+        "State bleeding from obo slot detected."
+    )
+    assert resp.status_code == 400
 
 
 # ── Test 4 ────────────────────────────────────────────────────────────────────
