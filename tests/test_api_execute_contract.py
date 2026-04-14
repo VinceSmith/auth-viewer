@@ -397,12 +397,18 @@ class TestDiagramIndexCachedToken:
                 f"Token Audience Mismatch must be diagram_index=-1, got {mismatch['diagram_index']}"
             )
         if silent:
-            assert silent["diagram_index"] == -1, (
-                f"Silent Token Acquisition must be diagram_index=-1, got {silent['diagram_index']}"
+            assert silent["diagram_index"] == 0, (
+                f"Silent Token Acquisition must be diagram_index=0 (aligns to Token Exchange "
+                f"in the silent diagram), got {silent['diagram_index']}"
             )
 
-    def test_silent_token_acquisition_has_diagram_index_minus_1(self, client):
-        """Silent Token Acquisition step must have diagram_index=-1 — no rect to highlight."""
+    def test_silent_token_acquisition_has_diagram_index_0(self, client):
+        """Silent Token Acquisition step must have diagram_index=0.
+
+        When a refresh_token is exchanged silently, _apply_silent_diagram_shift
+        rewrites the step to point at diagram rect 0 (Token Exchange in the
+        silent diagram). Downstream steps shift down by 1.
+        """
         # No access_token, but we have a refresh token
         _token_store[FAKE_SID] = {"auth_code": {"refresh_token": "valid-rt"}}
 
@@ -429,14 +435,24 @@ class TestDiagramIndexCachedToken:
             )
 
         assert resp.status_code == 200, resp.json()
-        steps = resp.json()["result"]["steps"]
+        data = resp.json()
+        steps = data["result"]["steps"]
         silent = next((s for s in steps if "Silent" in s["label"]), None)
         assert silent is not None, f"Expected Silent Token Acquisition step, got: {[s['label'] for s in steps]}"
-        assert silent["diagram_index"] == -1, (
-            f"Silent Token Acquisition must have diagram_index=-1 (no rect to highlight), "
-            f"got {silent['diagram_index']!r}. "
-            "This was the root cause of the pill/diagram mismatch bug."
+        assert silent["diagram_index"] == 0, (
+            f"Silent Token Acquisition must have diagram_index=0 (Token Exchange rect in silent diagram), "
+            f"got {silent['diagram_index']!r}."
         )
+        # Downstream resource step: was diagram_index=2, should shift to 1
+        resource = next((s for s in steps if "Call" in s["label"]), None)
+        if resource:
+            assert resource["diagram_index"] == 1, (
+                f"Resource step after silent acquire must shift to diagram_index=1, "
+                f"got {resource['diagram_index']!r}"
+            )
+        # The response diagram should be the silent variant
+        assert "refresh_token" in data["diagram"], "Silent path must use auth_code_silent diagram"
+        assert "GET /authorize" not in data["diagram"], "Silent diagram must not show /authorize"
 
 
 # ---------------------------------------------------------------------------

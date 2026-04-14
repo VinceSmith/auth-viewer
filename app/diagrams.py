@@ -316,6 +316,97 @@ DIAGRAMS = {
     B->>C: {{ data }}
     end""",
 
+    # ── Silent-token variants ──────────────────────────────────────────────────
+    # Used when a refresh_token is exchanged silently instead of the full
+    # interactive Authorize → code → token path.  Step 0 is always the
+    # refresh_token grant; the /authorize redirect is never shown.
+
+    "auth_code_silent": f"""sequenceDiagram
+    participant U as User / Browser
+    participant C as Client App<br/>(auth-viewer)
+    participant E as Entra ID
+    participant R as Resource API
+
+    Note over C: Silent Token Acquisition (refresh_token)
+    rect {_S0}
+    Note right of C: Step 1 — Token Exchange
+    C->>E: POST /token<br/>(grant_type=refresh_token,<br/>refresh_token, client_id,<br/>client_secret, scope)
+    E->>C: {{ access_token, id_token,<br/>refresh_token }}
+    end
+    rect {_S1}
+    Note right of C: Step 2 — Call Resource
+    C->>R: GET /endpoint<br/>Authorization: Bearer {{access_token}}
+    R->>C: {{ response }}
+    end""",
+
+    "obo_silent": f"""sequenceDiagram
+    participant U as User / Browser
+    participant C as Client App<br/>(auth-viewer)
+    participant A as API A<br/>(middle tier)
+    participant E as Entra ID
+    participant B as API B<br/>(downstream)
+
+    Note over C: On-Behalf-Of (OBO) — silent token
+    rect {_S0}
+    Note right of C: Step 1 — Token Exchange
+    C->>E: POST /token<br/>(grant_type=refresh_token,<br/>refresh_token, client_id,<br/>client_secret,<br/>scope=api://api-a/access_as_user)
+    E->>C: {{ access_token for API A,<br/>refresh_token }}
+    end
+    rect {_S1}
+    Note right of C: Step 2 — Call API A
+    C->>A: GET /me<br/>Authorization: Bearer {{token_A}}
+    A->>C: {{ claims }}
+    end
+    rect {_S2}
+    Note right of C: Step 3 — OBO Exchange
+    C->>E: POST /token<br/>(grant_type=jwt-bearer,<br/>assertion={{token_A}},<br/>client_id=api_a_app_id,<br/>scope=api://api-b/.default)
+    E->>C: {{ access_token for API B }}
+    end
+    rect {_S3}
+    Note right of C: Step 4 — Call API B
+    C->>B: GET /data<br/>Authorization: Bearer {{token_B}}
+    B->>C: {{ data }}
+    end""",
+
+    "agent_id_obo_silent": f"""sequenceDiagram
+    participant U as User / Browser
+    participant C as Client App
+    participant A as API A<br/>(middle tier)
+    participant E as Entra ID
+    participant B as API B<br/>(downstream)
+
+    Note over C: Agent ID — OBO (delegated, silent token)
+    rect {_S0}
+    Note right of C: Step 1 — Token Exchange
+    C->>E: POST /token<br/>(grant_type=refresh_token,<br/>refresh_token, client_id,<br/>client_secret,<br/>scope=api://blueprint/access_as_user)
+    E->>C: {{ user_token }}<br/>(aud: api://blueprint)
+    end
+    rect {_S1}
+    Note right of C: Step 2 — Parent Token
+    C->>E: POST /token<br/>(grant_type=client_credentials,<br/>client_id=blueprint_app_id,<br/>client_secret=blueprint_secret,<br/>scope=api://AzureADTokenExchange/.default,<br/>fmi_path=agent_identity_id)
+    E->>C: {{ parent_token }}
+    end
+    rect {_S2}
+    Note right of C: Step 3 — Agent OBO Exchange
+    C->>E: POST /token<br/>(grant_type=jwt-bearer,<br/>client_id=agent_identity_id,<br/>client_assertion=parent_token,<br/>assertion=user_token,<br/>scope=api://api-a/access_as_user)
+    E->>C: {{ agent_token_A }}<br/>(sub: agent, upn: user, aud: API A)
+    end
+    rect {_S3}
+    Note right of C: Step 4 — Call API A
+    C->>A: GET /me<br/>Authorization: Bearer {{agent_token_A}}
+    A->>C: {{ claims }}
+    end
+    rect {_S4}
+    Note right of C: Step 5 — OBO Exchange (API A \u2192 API B)
+    C->>E: POST /token<br/>(grant_type=jwt-bearer,<br/>assertion={{agent_token_A}},<br/>client_id=api_a_app_id,<br/>scope=api://api-b/.default)
+    E->>C: {{ token_B }}
+    end
+    rect {_S5}
+    Note right of C: Step 6 — Call API B
+    C->>B: GET /data<br/>Authorization: Bearer {{token_B}}
+    B->>C: {{ data }}
+    end""",
+
     "profile_login": f"""sequenceDiagram
     participant U as User / Browser
     participant C as Client App<br/>(auth-viewer)
