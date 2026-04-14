@@ -770,7 +770,11 @@ btnExecute.addEventListener('click', async () => {
                         } else {
                             displayResultLegacy(result, flowType);
                         }
-                        await loadDiagram(getDiagramKey());
+                        if (execData.diagram) {
+                            await renderMermaid(execData.diagram);
+                        } else {
+                            await loadDiagram(getDiagramKey());
+                        }
                         if (currentSteps.length > 0) highlightDiagramStep(currentStepIndex);
                         updateSessionStatus();
                         await loadHighlights();
@@ -827,8 +831,12 @@ btnExecute.addEventListener('click', async () => {
             displayResultLegacy(result, flowType);
         }
 
-        // Load the diagram matching the current mode (reuse vs new)
-        await loadDiagram(getDiagramKey());
+        // Use diagram variant returned by server (handles _cached / _silent paths)
+        if (data.diagram) {
+            await renderMermaid(data.diagram);
+        } else {
+            await loadDiagram(getDiagramKey());
+        }
         if (currentSteps.length > 0) highlightDiagramStep(currentStepIndex);
         updateSessionStatus();
         await loadHighlights();

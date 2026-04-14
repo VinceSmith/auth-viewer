@@ -754,8 +754,97 @@ describe('getInitials', () => {
 });
 
 // ---------------------------------------------------------------------------
-// Pure helper: httpStatusText
+// Execute flow: diagram variant selection from API response
 // ---------------------------------------------------------------------------
+
+describe('execute flow: uses diagram from API response, not getDiagramKey()', () => {
+  // The critical regression: when /api/execute returns a diagram field
+  // (e.g. the _cached or _silent variant), the JS must render THAT diagram
+  // instead of re-fetching via getDiagramKey() which always returns the base
+  // flow type (e.g. "agent_id_obo" instead of "agent_id_obo_cached").
+
+  function createAppWithFetch(fetchImpl) {
+    const dom = new JSDOM(MINIMAL_HTML, { runScripts: 'dangerously', url: 'http://localhost:8000' });
+    const win = dom.window;
+    const doc = win.document;
+    win.STEP_FILLS = DEFAULT_STEP_FILLS;
+    win.fetch = fetchImpl;
+    win.mermaid = {
+      initialize: () => {},
+      render: (id, code) => Promise.resolve({ svg: `<svg data-code="${code.slice(0, 20)}"></svg>` }),
+    };
+    const _origGetById = doc.getElementById.bind(doc);
+    doc.getElementById = (id) => _origGetById(id) || doc.createElement('div');
+    // Suppress setInterval to prevent test from hanging (startSigninLogPolling)
+    win.setInterval = () => 0;
+    win.clearInterval = () => {};
+    dom.window.eval(APP_JS);
+    return win;
+  }
+
+  test('renderMermaid is called with diagram from data.diagram, not a separate /api/diagram/ fetch', async () => {
+    const cachedDiagram = 'sequenceDiagram\n  Note over C: Token from cache';
+    const diagramFetchUrls = [];
+
+    const w = createAppWithFetch((url, opts) => {
+      if (url.startsWith('/api/diagram/')) {
+        diagramFetchUrls.push(url);
+        return Promise.resolve({
+          ok: true,
+          json: () => Promise.resolve({ diagram: 'WRONG_DIAGRAM_FROM_SEPARATE_FETCH' }),
+        });
+      }
+      if (url === '/api/execute') {
+        return Promise.resolve({
+          ok: true,
+          json: () => Promise.resolve({
+            result: {
+              steps: [
+                { label: 'Token Cache Hit', diagram_index: -1, description: 'cached', tokens: {}, highlights: {} },
+                { label: 'Parent Token', diagram_index: 0, description: 'parent', tokens: {}, highlights: {} },
+              ],
+              context: '',
+            },
+            diagram: cachedDiagram,
+          }),
+        });
+      }
+      // Handle all other endpoints (highlights, signin-log, etc.)
+      return Promise.resolve({ ok: true, json: () => Promise.resolve({}) });
+    });
+
+    // Spy on renderMermaid by intercepting mermaid.render calls
+    const renderedCodes = [];
+    w.mermaid.render = (id, code) => {
+      renderedCodes.push(code);
+      return Promise.resolve({ svg: '<svg></svg>' });
+    };
+
+    // Drain DOMContentLoaded async operations before starting the test
+    await new Promise(r => setTimeout(r, 50));
+
+    // Clear any diagram fetches from DOMContentLoaded initialization
+    diagramFetchUrls.length = 0;
+    renderedCodes.length = 0;
+
+    // Use client_credentials so btn-execute goes to /api/execute, not /auth/login redirect
+    w.authCategory = 'client_credentials';
+
+    // Trigger execute by clicking btn-execute
+    const btnExecute = w.document.getElementById('btn-execute');
+    btnExecute.click();
+    // Wait for async ops to complete
+    await new Promise(r => setTimeout(r, 100));
+
+    // The /api/diagram/* endpoint must NOT be called after execute succeeds
+    expect(diagramFetchUrls).toHaveLength(0);
+
+    // The diagram rendered must be the one from data.diagram
+    expect(renderedCodes.some(c => c === cachedDiagram)).toBe(true);
+    expect(renderedCodes.some(c => c === 'WRONG_DIAGRAM_FROM_SEPARATE_FETCH')).toBe(false);
+  });
+});
+
 
 describe('httpStatusText', () => {
   let w;
