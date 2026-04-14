@@ -1,7 +1,5 @@
 """FastAPI application — Entra OAuth Explorer."""
 
-import json
-import base64
 import secrets
 import time as _time
 
@@ -9,11 +7,13 @@ from fastapi import FastAPI, Request
 from fastapi.responses import HTMLResponse, RedirectResponse, JSONResponse
 from fastapi.staticfiles import StaticFiles
 from fastapi.templating import Jinja2Templates
+from pydantic import BaseModel
 from starlette.middleware.sessions import SessionMiddleware
 
 from app.config import settings
 from app.diagrams import get_diagram, DIAGRAMS, STEP_FILLS
 from app.auth import flows
+from app.auth.token_utils import decode_jwt
 
 app = FastAPI(title="Entra OAuth Explorer")
 app.add_middleware(SessionMiddleware, secret_key=settings.session_secret)
@@ -32,11 +32,75 @@ def _base_ctx() -> dict:
         "step_fills_json": _STEP_FILLS_JSON,
     }
 
+
+class TtlDict:
+    """A dict-like container that auto-evicts entries after a TTL (seconds)."""
+
+    def __init__(self, ttl: float):
+        self._ttl = ttl
+        self._data: dict = {}
+        self._expires: dict = {}
+
+    def __setitem__(self, key, value):
+        self._data[key] = value
+        self._expires[key] = _time.time() + self._ttl
+        self._evict()
+
+    def __getitem__(self, key):
+        if self._is_expired(key):
+            self._delete(key)
+            raise KeyError(key)
+        return self._data[key]
+
+    def __delitem__(self, key):
+        self._delete(key)
+
+    def __contains__(self, key):
+        if self._is_expired(key):
+            self._delete(key)
+            return False
+        return key in self._data
+
+    def get(self, key, default=None):
+        try:
+            return self[key]
+        except KeyError:
+            return default
+
+    def pop(self, key, *args):
+        if key in self:
+            value = self._data[key]
+            self._delete(key)
+            return value
+        if args:
+            return args[0]
+        raise KeyError(key)
+
+    def setdefault(self, key, default=None):
+        if key not in self:
+            self[key] = default
+        return self[key]
+
+    def _is_expired(self, key) -> bool:
+        exp = self._expires.get(key)
+        return exp is not None and _time.time() > exp
+
+    def _delete(self, key):
+        self._data.pop(key, None)
+        self._expires.pop(key, None)
+
+    def _evict(self):
+        now = _time.time()
+        expired = [k for k, exp in self._expires.items() if now > exp]
+        for k in expired:
+            self._delete(k)
+
+
 # Server-side store for results that are too large for session cookies.
 # Keyed by a random result_id; the session only stores the small ID string.
-_result_store: dict[str, dict] = {}
+_result_store: TtlDict = TtlDict(ttl=30 * 60)   # 30 minutes
 # Also store raw tokens server-side (they're ~1.5KB each, too big for cookies)
-_token_store: dict[str, dict] = {}
+_token_store: TtlDict = TtlDict(ttl=4 * 60 * 60)  # 4 hours
 # Pending OAuth states → associated session data.
 # Allows callbacks from any recent login to succeed even if a newer login
 # overwrote the session cookie (e.g. multiple tabs, double-click, SSO race).
@@ -50,14 +114,13 @@ _test_callback_counter: int = 0
 
 def _decode_jwt_payload(token: str) -> dict:
     """Decode a JWT's payload without verification. Returns {} on failure."""
-    try:
-        payload_b64 = token.split(".")[1]
-        padding = 4 - len(payload_b64) % 4
-        if padding != 4:
-            payload_b64 += "=" * padding
-        return json.loads(base64.urlsafe_b64decode(payload_b64))
-    except Exception:
+    decoded = decode_jwt(token)
+    if "error" in decoded:
         return {}
+    payload = decoded.get("payload", {})
+    if "decode_error" in payload:
+        return {}
+    return payload
 
 
 def _is_token_expired(token: str) -> bool:
@@ -461,6 +524,11 @@ async def auth_callback(request: Request, code: str = "", state: str = "", error
 
     # Store tokens server-side for later use (refresh, OBO)
     resp_body = result.get("response", {}).get("body", {})
+    if "error" in resp_body:
+        return templates.TemplateResponse(request, "index.html", {
+            **_base_ctx(),
+            "error": f"{resp_body['error']}: {resp_body.get('error_description', '')}",
+        })
     session_id = request.session.get("sid") or secrets.token_urlsafe(16)
     request.session["sid"] = session_id
     if session_id not in _token_store:
@@ -483,7 +551,6 @@ async def auth_callback(request: Request, code: str = "", state: str = "", error
     # Store ID token claims for the profile avatar
     raw_id_token = resp_body.get("id_token", "")
     if raw_id_token:
-        from app.auth.token_utils import decode_jwt
         decoded = decode_jwt(raw_id_token)
         payload = decoded.get("payload", {})
         _token_store[session_id]["user_profile"] = {
@@ -593,7 +660,7 @@ async def auth_callback(request: Request, code: str = "", state: str = "", error
         result_id = secrets.token_urlsafe(16)
         _result_store[result_id] = {"result": result, "flow_type": "profile_login"}
         request.session["result_id"] = result_id
-        request.session["last_flow"] = "profile_login"
+        request.session["last_flow"] = flow_type
         return RedirectResponse("/", status_code=303)
 
     # Store full result server-side (too large for cookie)
@@ -616,22 +683,33 @@ async def auth_callback(request: Request, code: str = "", state: str = "", error
 
 
 # ---------------------------------------------------------------------------
+# Request models for POST endpoints
+class ExecuteRequest(BaseModel):
+    flow_type: str
+    scope: str = ""
+    user_token: str = ""
+
+
+class SilentAcquireRequest(BaseModel):
+    scope: str = ""
+    flow_type: str = "auth_code"
+
+
 # API endpoints (called by frontend JS)
 # ---------------------------------------------------------------------------
 
 @app.post("/api/execute")
-async def api_execute(request: Request):
+async def api_execute(request: Request, body: ExecuteRequest):
     """Execute a token flow and return the result."""
-    body = await request.json()
-    flow_type = body.get("flow_type", "")
-    scope = body.get("scope", "")
+    flow_type = body.flow_type
+    scope = body.scope
 
     try:
         sid = request.session.get("sid", "")
         stored = _token_store.get(sid, {})
 
         if flow_type == "auth_code":
-            user_token, info_steps = await _resolve_user_token(stored, flow_type, body_token=body.get("user_token", ""), scope_hint=scope)
+            user_token, info_steps = await _resolve_user_token(stored, flow_type, body_token=body.user_token, scope_hint=scope)
             if not user_token:
                 return JSONResponse({"error": "No user token available. Sign in first."}, status_code=400)
             if _is_token_expired(user_token):
@@ -646,7 +724,7 @@ async def api_execute(request: Request):
             result = await flows.execute_client_credentials_chain(scope=scope)
 
         elif flow_type == "obo":
-            user_token, info_steps = await _resolve_user_token(stored, flow_type, body_token=body.get("user_token", ""))
+            user_token, info_steps = await _resolve_user_token(stored, flow_type, body_token=body.user_token)
             if not user_token:
                 return JSONResponse({"error": "No user token available. Run Auth Code flow first."}, status_code=400)
             if _is_token_expired(user_token):
@@ -662,7 +740,7 @@ async def api_execute(request: Request):
             result = await flows.execute_agent_id_autonomous_chain(scope=scope)
 
         elif flow_type == "agent_id_obo":
-            user_token, info_steps = await _resolve_user_token(stored, flow_type, body_token=body.get("user_token", ""))
+            user_token, info_steps = await _resolve_user_token(stored, flow_type, body_token=body.user_token)
             if not user_token:
                 return JSONResponse({"error": "No user token available. Run Auth Code flow first."}, status_code=400)
             if _is_token_expired(user_token):
@@ -695,15 +773,14 @@ async def api_signin_logs(after: str = ""):
 
 
 @app.post("/api/silent-acquire")
-async def api_silent_acquire(request: Request):
+async def api_silent_acquire(request: Request, body: SilentAcquireRequest):
     """Silently acquire an access token using the stored refresh token.
 
     This avoids a full browser redirect through Entra /authorize when
     the user already has a session (profile login completed).
     """
-    body = await request.json()
-    scope = body.get("scope", "")
-    flow_type = body.get("flow_type", "auth_code")
+    scope = body.scope
+    flow_type = body.flow_type
 
     sid = request.session.get("sid", "")
     stored = _token_store.get(sid, {})
@@ -735,7 +812,6 @@ async def api_silent_acquire(request: Request):
     # Update ID token if a new one was returned
     raw_id = resp_body.get("id_token", "")
     if raw_id:
-        from app.auth.token_utils import decode_jwt
         decoded = decode_jwt(raw_id)
         payload = decoded.get("payload", {})
         stored["user_profile"] = {
