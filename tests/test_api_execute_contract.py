@@ -313,8 +313,13 @@ class TestDiagramIndexCachedToken:
             f"Cache Hit step ({cache_idx}) must come before resource step ({resource_idx})"
         )
 
-    def test_resource_step_after_cache_hit_has_diagram_index_2(self, client):
-        """After a cached token, the resource step must still have diagram_index=2."""
+    def test_resource_step_after_cache_hit_has_diagram_index_0(self, client):
+        """After a cached token, the resource step shifts to diagram_index=0.
+
+        _apply_token_diagram_shift shifts all positive diagram_indexes down by
+        min_positive (=2), so the resource step 2→0, matching auth_code_cached
+        diagram rect 0 = 'Step 1 — Call Resource'.
+        """
         _seed_token(FAKE_API_A_ID, "auth_code")
 
         with patch("app.auth.flows.call_resource", new_callable=AsyncMock) as mock_res:
@@ -327,7 +332,12 @@ class TestDiagramIndexCachedToken:
         steps = resp.json()["result"]["steps"]
         resource_step = next((s for s in steps if "Call" in s["label"]), None)
         assert resource_step is not None
-        assert resource_step["diagram_index"] == 2
+        assert resource_step["diagram_index"] == 0, (
+            f"Resource step after cache hit must shift to diagram_index=0, "
+            f"got {resource_step['diagram_index']!r}"
+        )
+        # Also verify the cached diagram was selected
+        assert "GET /authorize" not in resp.json()["diagram"]
 
     def test_obo_cache_hit_has_diagram_index_minus_1(self, client):
         """OBO cached token (Token Cache Hit) must have diagram_index=-1."""
@@ -461,11 +471,12 @@ class TestDiagramIndexCachedToken:
 
 class TestDiagramIndexAuthCode:
 
-    def test_auth_code_resource_step_has_diagram_index_2(self, client):
-        """The resource step in auth_code execute must have diagram_index=2.
+    def test_auth_code_resource_step_has_diagram_index_0_when_cached(self, client):
+        """With a cached token, resource step shifts to diagram_index=0.
 
-        Diagram rects: 0=Authorize, 1=Token Exchange, 2=Resource Call.
-        Authorize and Token Exchange are set in auth_callback, not here.
+        _seed_token puts a valid token in store → Token Cache Hit is prepended →
+        _apply_token_diagram_shift shifts: resource step 2 → 0, matching
+        auth_code_cached diagram rect 0 = 'Step 1 — Call Resource'.
         """
         _seed_token(FAKE_API_A_ID, "auth_code")
 
@@ -480,8 +491,8 @@ class TestDiagramIndexAuthCode:
         steps = resp.json()["result"]["steps"]
         resource = next((s for s in steps if "Call" in s["label"]), None)
         assert resource is not None, f"No resource step in: {[s['label'] for s in steps]}"
-        assert resource["diagram_index"] == 2, (
-            f"Resource step must have diagram_index=2, got {resource['diagram_index']!r}"
+        assert resource["diagram_index"] == 0, (
+            f"Resource step (cached path) must have diagram_index=0, got {resource['diagram_index']!r}"
         )
 
 
@@ -491,10 +502,10 @@ class TestDiagramIndexAuthCode:
 
 class TestDiagramIndexOBO:
 
-    def test_obo_call_api_a_has_diagram_index_2(self, client):
-        """OBO's 'Call API A' step must have diagram_index=2.
+    def test_obo_call_api_a_has_diagram_index_0_when_cached(self, client):
+        """OBO's 'Call API A' step shifts to diagram_index=0 with a cached token.
 
-        (Authorize=0, Token Exchange=1 from auth_callback; OBO starts at 2.)
+        Token Cache Hit is prepended → shift: 2→0, matching obo_cached Step 1.
         """
         _seed_token(FAKE_API_A_ID, "obo")
         token_resp = make_mock_response(200, {"access_token": _make_token(FAKE_API_B_ID), "token_type": "Bearer"})
@@ -509,10 +520,12 @@ class TestDiagramIndexOBO:
         steps = resp.json()["result"]["steps"]
         call_api_a = next((s for s in steps if "Call API A" in s.get("label", "")), None)
         assert call_api_a is not None, f"No 'Call API A' step in: {[s['label'] for s in steps]}"
-        assert call_api_a["diagram_index"] == 2
+        assert call_api_a["diagram_index"] == 0, (
+            f"Call API A (cached path) must have diagram_index=0, got {call_api_a['diagram_index']!r}"
+        )
 
-    def test_obo_exchange_has_diagram_index_3(self, client):
-        """OBO token exchange step must have diagram_index=3."""
+    def test_obo_exchange_has_diagram_index_1_when_cached(self, client):
+        """OBO token exchange step shifts to diagram_index=1 with a cached token."""
         _seed_token(FAKE_API_A_ID, "obo")
         token_resp = make_mock_response(200, {"access_token": _make_token(FAKE_API_B_ID), "token_type": "Bearer"})
         resource_resp = make_mock_response(200, {"data": "ok"})
@@ -526,7 +539,9 @@ class TestDiagramIndexOBO:
         steps = resp.json()["result"]["steps"]
         obo_step = next((s for s in steps if "OBO" in s.get("label", "") or "On-Behalf" in s.get("label", "")), None)
         assert obo_step is not None, f"No OBO exchange step in: {[s['label'] for s in steps]}"
-        assert obo_step["diagram_index"] == 3
+        assert obo_step["diagram_index"] == 1, (
+            f"OBO exchange (cached path) must shift to diagram_index=1, got {obo_step['diagram_index']!r}"
+        )
 
 
 # ---------------------------------------------------------------------------

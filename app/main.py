@@ -350,31 +350,55 @@ async def _resolve_user_token(
     return token, info_steps
 
 
-def _apply_silent_diagram_shift(steps: list[dict]) -> bool:
-    """Shift diagram_index values when a silent token acquisition was used.
+def _apply_token_diagram_shift(steps: list[dict]) -> str:
+    """Shift diagram_index values when an interactive auth flow was skipped.
 
-    When the user already has a session and a refresh_token is exchanged
-    instead of the interactive /authorize flow, the sequence diagram should
-    start at "Token Exchange (refresh_token)" rather than "Authorize".
+    Two cases:
+      "Silent Token Acquisition" — a refresh_token grant was made instead of
+        /authorize. The silent step maps to diagram index 0; downstream steps
+        shift down by (min_positive - 1).
 
-    Mutates steps in-place:
-    - The "Silent Token Acquisition" step gets diagram_index = 0
-    - All other steps with diagram_index >= 0 are decremented by 1
+      "Token Cache Hit" — a valid token was found in the session; no new token
+        request at all. The cache-hit step stays at -1 (display-only); all
+        other positive indexes shift down by min_positive so the first real
+        flow step becomes index 0.
 
-    Returns True if the shift was applied, False otherwise.
+    Mutates steps in-place.
+
+    Returns:
+      "_silent"  — silent token acquisition path was detected
+      "_cached"  — token cache hit path was detected
+      ""         — no non-interactive path; steps unchanged
     """
-    silent_pos = next(
-        (i for i, s in enumerate(steps) if s.get("label") == "Silent Token Acquisition"),
-        None,
-    )
-    if silent_pos is None:
-        return False
+    has_silent = any(s.get("label") == "Silent Token Acquisition" for s in steps)
+    has_cache = any(s.get("label") == "Token Cache Hit" for s in steps)
 
-    steps[silent_pos]["diagram_index"] = 0
-    for i, step in enumerate(steps):
-        if i != silent_pos and step.get("diagram_index", -1) >= 0:
-            step["diagram_index"] -= 1
-    return True
+    if not has_silent and not has_cache:
+        return ""
+
+    # Collect positive diagram_index values (excluding the silent step itself)
+    pos_indexes = [
+        s["diagram_index"]
+        for s in steps
+        if s.get("label") != "Silent Token Acquisition" and s.get("diagram_index", -1) >= 0
+    ]
+
+    if has_silent:
+        # Silent step occupies slot 0; downstream steps shift by (min - 1)
+        shift = (min(pos_indexes) - 1) if pos_indexes else 0
+        for step in steps:
+            if step.get("label") == "Silent Token Acquisition":
+                step["diagram_index"] = 0
+            elif step.get("diagram_index", -1) >= 0:
+                step["diagram_index"] -= shift
+        return "_silent"
+    else:
+        # Cache hit: first real step becomes 0; cache-hit stays at -1
+        shift = min(pos_indexes) if pos_indexes else 0
+        for step in steps:
+            if step.get("diagram_index", -1) >= 0:
+                step["diagram_index"] -= shift
+        return "_cached"
 
 
 def _extract_subjects(result: dict) -> None:
@@ -839,9 +863,9 @@ async def api_execute(request: Request, body: ExecuteRequest):
     # Extract subjects from decoded tokens
     _extract_subjects(result)
 
-    # Select diagram — use silent variant when refresh_token path was taken
-    is_silent = _apply_silent_diagram_shift(result.get("steps", []))
-    diagram_key = f"{flow_type}_silent" if is_silent else flow_type
+    # Select diagram — use silent/cached variant when interactive auth was skipped
+    variant = _apply_token_diagram_shift(result.get("steps", []))
+    diagram_key = f"{flow_type}{variant}" if variant else flow_type
     diagram = get_diagram(diagram_key)
     return JSONResponse({"result": result, "diagram": diagram})
 
