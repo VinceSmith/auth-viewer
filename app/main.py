@@ -174,6 +174,50 @@ _FLOW_TOKEN_CONFIG: dict[str, dict] = {
 }
 
 
+class _FlowError(Exception):
+    """Raised by _run_delegated_flow for user-facing 400-class flow errors.
+
+    Avoids the fragile isinstance(result, JSONResponse) pattern by making
+    control flow explicit via exceptions.
+    """
+    def __init__(self, body: dict, status_code: int = 400):
+        self.body = body
+        self.status_code = status_code
+        super().__init__(str(body))
+
+
+async def _run_delegated_flow(
+    stored: dict,
+    flow_type: str,
+    execute_fn,
+) -> dict:
+    """Resolve a user token and call execute_fn, prepending info steps to the result.
+
+    Args:
+        stored:     The _token_store entry for this session.
+        flow_type:  "obo" | "agent_id_obo"
+        execute_fn: async callable(token: str) -> dict — receives the resolved token.
+
+    Raises:
+        _FlowError: when no valid token is found or the token is expired.
+        Any exception from execute_fn propagates unchanged.
+    """
+    user_token, info_steps = await _resolve_user_token(stored, flow_type)
+    if not user_token:
+        raise _FlowError(
+            {"error": "No user token available. Run Auth Code flow first."}
+        )
+    if _is_token_expired(user_token):
+        raise _FlowError(
+            {"error": "token_expired",
+             "message": "Your access token has expired. Please sign in again."}
+        )
+    result = await execute_fn(user_token)
+    if info_steps:
+        result.setdefault("steps", [])[:0] = info_steps
+    return result
+
+
 async def _resolve_user_token(
     stored: dict, flow_type: str, *, body_token: str = "", scope_hint: str = "",
 ) -> tuple[str, list[dict]]:
