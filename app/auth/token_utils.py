@@ -2,8 +2,10 @@ import base64
 import json
 from datetime import datetime, timezone
 
+from app.auth.types import JwtDecoded, TokenResponse
 
-def decode_jwt(token: str) -> dict:
+
+def decode_jwt(token: str) -> JwtDecoded:
     """Decode a JWT token into header and payload (no signature verification)."""
     parts = token.split(".")
     if len(parts) < 2:
@@ -46,7 +48,7 @@ def format_token_response(
     *, request_method: str, request_url: str, request_headers: dict,
     request_body: dict | str, response_status: int, response_headers: dict,
     response_body: dict,
-) -> dict:
+) -> TokenResponse:
     """Package a token exchange request/response for the UI."""
     if isinstance(request_body, dict):
         display_body = {}

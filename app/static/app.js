@@ -19,17 +19,9 @@ let signinLogCountdown = 0;
 let signinLogMaxTime = 600;  // stop auto-polling after 10 minutes
 let signinLogElapsed = 0;
 
-// Step rect fill colors — must match diagrams.py STEP_FILLS
-const STEP_FILLS = [
-    [25, 35, 65],
-    [25, 60, 35],
-    [65, 30, 25],
-    [30, 55, 55],
-    [55, 30, 55],
-    [55, 55, 25],
-    [45, 45, 60],
-    [60, 40, 30],
-];
+// Step rect fill colors — injected from diagrams.py via base.html template.
+// Do NOT hardcode this here; edit STEP_FILLS in app/diagrams.py instead.
+// (const STEP_FILLS is set by the inline <script> in base.html)
 
 // JWT claim descriptions for hover tooltips
 const CLAIM_DESCRIPTIONS = {

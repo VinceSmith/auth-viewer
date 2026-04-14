@@ -6,3 +6,5 @@ httpx
 python-jose[cryptography]
 pydantic-settings
 itsdangerous
+pytest
+pytest-asyncio

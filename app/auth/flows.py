@@ -8,6 +8,7 @@ import httpx
 
 from app.config import settings
 from app.auth.token_utils import format_token_response, decode_jwt
+from app.auth.types import StepDict, TokenResponse
 
 _logger = logging.getLogger(__name__)
 
@@ -106,7 +107,7 @@ def _build_step(
     tokens: dict | None = None,
     highlights: dict | None = None,
     authorize_url: str | None = None,
-) -> dict:
+) -> StepDict:
     """Build a single step dict for the step-through visualizer."""
     step = {
         "label": label,
@@ -932,17 +933,24 @@ async def execute_agent_id_autonomous_chain(*, scope: str) -> dict:
 # ---------------------------------------------------------------------------
 
 async def execute_agent_id_obo(*, user_token: str, scope: str) -> dict:
-    """Agent ID OBO flow with full chain: agent exchange → API A → OBO → API B.
+    """Agent ID OBO flow — direct or chained depending on target scope.
 
-    Step 1: client_credentials + fmi_path → parent token (Blueprint)
-    Step 2: jwt-bearer OBO exchange → agent token scoped to API A
-    Step 3: Call API A with agent token
-    Step 4: API A OBO exchange → token scoped to downstream (API B / Graph)
-    Step 5: Call downstream resource
+    Direct (target is NOT API A):
+      Step 1: client_credentials + fmi_path → parent token (Blueprint)
+      Step 2: jwt-bearer OBO exchange → agent token scoped to target resource
+      Step 3: Call target resource
+
+    Chained (target is API A, or explicit chain through API A → downstream):
+      Step 1: client_credentials + fmi_path → parent token (Blueprint)
+      Step 2: jwt-bearer OBO exchange → agent token scoped to API A
+      Step 3: Call API A with agent token
+      Step 4: API A OBO exchange → token scoped to downstream (API B / Graph)
+      Step 5: Call downstream resource
     """
     # Ensure OIDC discovery is cached for endpoint resolution
     _, fetched = await _ensure_oidc_discovery()
     steps_prefix = [_oidc_discovery_step()] if fetched else []
+
     # Step 1: Get parent token
     step1_result, parent_step = await _acquire_parent_token()
     parent_token = step1_result["response"]["body"].get("access_token")
@@ -959,7 +967,72 @@ async def execute_agent_id_obo(*, user_token: str, scope: str) -> dict:
             ],
         }
 
-    # Step 3: OBO exchange — get agent token scoped to API A
+    # Determine whether the target scope involves API A (chained) or goes direct
+    api_a_scope_id = settings.api_a_app_id or ""
+    targets_api_a = api_a_scope_id and api_a_scope_id in scope
+
+    if targets_api_a:
+        # ── Chained path: Agent → API A (→ optionally downstream) ──
+        return await _agent_id_obo_chain(
+            user_token=user_token, scope=scope,
+            parent_token=parent_token, parent_step=parent_step,
+            step1_result=step1_result, steps_prefix=steps_prefix,
+        )
+
+    # ── Direct path: Agent → target resource (API B, Graph, etc.) ──
+    obo_scope = scope
+    step2_params = {
+        "client_id": settings.agent_identity_id,
+        "client_assertion_type": "urn:ietf:params:oauth:client-assertion-type:jwt-bearer",
+        "client_assertion": parent_token,
+        "grant_type": "urn:ietf:params:oauth:grant-type:jwt-bearer",
+        "assertion": user_token,
+        "requested_token_use": "on_behalf_of",
+        "scope": obo_scope,
+    }
+    step2_result = await _post_token_endpoint(
+        settings.agent_token_endpoint, step2_params,
+    )
+
+    exchange_step = _result_to_step(
+        step2_result,
+        label="OBO Exchange (Agent → Target)",
+        description="Agent Identity exchanges the parent token + user token via OBO "
+                    "to get a token scoped directly to the target resource. The "
+                    "client_assertion is the parent token (proving agent identity), "
+                    "the assertion is the user token (proving user context). No "
+                    "intermediate API hop is needed.",
+    )
+    # Include decoded parent token (client_assertion) and user token (assertion)
+    decoded_parent = decode_jwt(parent_token)
+    if decoded_parent.get("payload"):
+        exchange_step["tokens"]["assertion_token"] = {
+            "raw": parent_token,
+            **decoded_parent,
+        }
+    decoded_user = decode_jwt(user_token)
+    if decoded_user.get("payload"):
+        exchange_step["tokens"]["user_assertion_token"] = {
+            "raw": user_token,
+            **decoded_user,
+        }
+
+    steps = steps_prefix + [parent_step, exchange_step]
+    steps.append(await _call_resource_or_skip(step2_result, scope))
+
+    return {
+        "step1": step1_result,
+        "step2": step2_result,
+        "steps": steps,
+    }
+
+
+async def _agent_id_obo_chain(
+    *, user_token: str, scope: str,
+    parent_token: str, parent_step: dict,
+    step1_result: dict, steps_prefix: list[dict],
+) -> dict:
+    """Chained Agent ID OBO: Agent → API A → downstream."""
     api_a_scope = settings.api_a_scope or f"api://{settings.api_a_app_id}/access_as_user"
     step2_params = {
         "client_id": settings.agent_identity_id,
@@ -1007,14 +1080,14 @@ async def execute_agent_id_obo(*, user_token: str, scope: str) -> dict:
         ))
         return {"step1": step1_result, "step2": step2_result, "steps": steps}
 
-    # Step 4: Call API A with the agent token
+    # Call API A with the agent token
     steps.append(await _call_resource(access_token=api_a_token, scope=api_a_scope))
 
-    # Step 5: OBO exchange — API A exchanges agent's token for downstream (API B)
+    # OBO exchange — API A exchanges agent's token for downstream (API B)
     # If the target scope is API A itself, there's no downstream — just stop here.
     api_a_scope_id = settings.api_a_app_id or ""
-    if api_a_scope_id and api_a_scope_id in scope:
-        pass  # API A is the final target — no OBO needed, flow is complete
+    if api_a_scope_id and api_a_scope_id in scope and "/" not in scope.split(api_a_scope_id)[-1].lstrip("/"):
+        pass  # API A is the final target — scope points at API A, no downstream
     else:
         obo_result = await _obo_token_exchange(assertion=api_a_token, scope=scope)
 
@@ -1033,7 +1106,7 @@ async def execute_agent_id_obo(*, user_token: str, scope: str) -> dict:
         )
         steps.append(obo_step)
 
-        # Step 6: Call downstream resource (API B / Graph)
+        # Call downstream resource (API B / Graph)
         steps.append(await _call_resource_or_skip(obo_result, scope))
 
     return {

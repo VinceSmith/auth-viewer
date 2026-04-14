@@ -5,14 +5,36 @@ The frontend scans the SVG for these rects to make them clickable
 and to highlight the active step.
 """
 
-# Step colours — keep in sync with STEP_FILLS in app.js
-# Step 0 = deep blue, 1 = deep green, 2 = deep red, 3 = deep teal, 4 = deep purple
-_S0 = "rgb(25,35,65)"
-_S1 = "rgb(25,60,35)"
-_S2 = "rgb(65,30,25)"
-_S3 = "rgb(30,55,55)"
-_S4 = "rgb(55,30,55)"
-_S5 = "rgb(55,55,25)"
+# Single source of truth for step highlight colours.
+# JS reads this via the `step_fills` template variable injected by main.py —
+# there is NO hardcoded copy in app.js.
+# Step 0 = deep blue, 1 = deep green, 2 = deep red, 3 = deep teal,
+# 4 = deep purple, 5 = olive, 6 = slate blue, 7 = sienna
+STEP_FILLS: list[tuple[int, int, int]] = [
+    (25, 35, 65),
+    (25, 60, 35),
+    (65, 30, 25),
+    (30, 55, 55),
+    (55, 30, 55),
+    (55, 55, 25),
+    (45, 45, 60),
+    (60, 40, 30),
+]
+
+
+def _rgb(idx: int) -> str:
+    r, g, b = STEP_FILLS[idx]
+    return f"rgb({r},{g},{b})"
+
+
+_S0 = _rgb(0)
+_S1 = _rgb(1)
+_S2 = _rgb(2)
+_S3 = _rgb(3)
+_S4 = _rgb(4)
+_S5 = _rgb(5)
+_S6 = _rgb(6)
+_S7 = _rgb(7)
 
 DIAGRAMS = {
     "auth_code": f"""sequenceDiagram
@@ -288,7 +310,7 @@ DIAGRAMS = {
     C->>E: POST /token<br/>(grant_type=jwt-bearer,<br/>assertion={{agent_token_A}},<br/>client_id=api_a_app_id,<br/>scope=api://api-b/.default)
     E->>C: {{ token_B }}
     end
-    rect rgb(45,45,60)
+    rect {_S6}
     Note right of C: Step 7 — Call API B
     C->>B: GET /data<br/>Authorization: Bearer {{token_B}}
     B->>C: {{ data }}

@@ -12,13 +12,25 @@ from fastapi.templating import Jinja2Templates
 from starlette.middleware.sessions import SessionMiddleware
 
 from app.config import settings
-from app.diagrams import get_diagram, DIAGRAMS
+from app.diagrams import get_diagram, DIAGRAMS, STEP_FILLS
 from app.auth import flows
 
 app = FastAPI(title="Entra OAuth Explorer")
 app.add_middleware(SessionMiddleware, secret_key=settings.session_secret)
 app.mount("/static", StaticFiles(directory="app/static"), name="static")
 templates = Jinja2Templates(directory="app/templates")
+
+import json as _json
+_STEP_FILLS_JSON = _json.dumps(STEP_FILLS)
+
+def _base_ctx() -> dict:
+    """Common template context shared by every page render."""
+    return {
+        "settings": settings,
+        "flow_types": list(DIAGRAMS.keys()),
+        "cache_bust": int(_time.time()),
+        "step_fills_json": _STEP_FILLS_JSON,
+    }
 
 # Server-side store for results that are too large for session cookies.
 # Keyed by a random result_id; the session only stores the small ID string.
@@ -294,11 +306,7 @@ async def index(request: Request):
     stored = _token_store.get(sid, {})
     if not stored.get("user_profile"):
         return RedirectResponse("/auth/login?scope=openid+profile+offline_access", status_code=302)
-    return templates.TemplateResponse(request, "index.html", {
-        "settings": settings,
-        "flow_types": list(DIAGRAMS.keys()),
-        "cache_bust": int(_time.time()),
-    })
+    return templates.TemplateResponse(request, "index.html", _base_ctx())
 
 
 # ---------------------------------------------------------------------------
@@ -397,9 +405,7 @@ async def auth_callback(request: Request, code: str = "", state: str = "", error
             "ts": _time.time(),
         }
         return templates.TemplateResponse(request, "index.html", {
-            "settings": settings,
-            "flow_types": list(DIAGRAMS.keys()),
-            "cache_bust": int(_time.time()),
+            **_base_ctx(),
             "error": f"{error}: {error_description}",
         })
 
@@ -422,9 +428,7 @@ async def auth_callback(request: Request, code: str = "", state: str = "", error
             pending = mem  # pure in-memory fallback
         if not pending:
             return templates.TemplateResponse(request, "index.html", {
-                "settings": settings,
-                "flow_types": list(DIAGRAMS.keys()),
-                "cache_bust": int(_time.time()),
+                **_base_ctx(),
                 "error": f"State mismatch: expected {expected_state!r}, got {state!r}. "
                           "This usually means another sign-in was started (second tab, "
                           "double-click) before this one completed.",
@@ -572,6 +576,9 @@ async def auth_callback(request: Request, code: str = "", state: str = "", error
     if not has_resource_scope:
         # Store bootstrap explanation as context (not a step) so it doesn't
         # break 1:1 mapping between step pills and sequence diagram rects.
+        # Strip steps so the step visualizer stays clean — the context banner
+        # is enough to explain what happened.
+        result.pop("steps", None)
         result["context"] = (
             "This Auth Code flow was triggered automatically to establish your session. "
             "The scopes 'openid profile offline_access' make this an OpenID Connect "
