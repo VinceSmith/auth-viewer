@@ -190,19 +190,26 @@ async def _run_delegated_flow(
     stored: dict,
     flow_type: str,
     execute_fn,
+    *,
+    body_token: str = "",
+    scope_hint: str = "",
 ) -> dict:
     """Resolve a user token and call execute_fn, prepending info steps to the result.
 
     Args:
-        stored:     The _token_store entry for this session.
-        flow_type:  "obo" | "agent_id_obo"
-        execute_fn: async callable(token: str) -> dict — receives the resolved token.
+        stored:      The _token_store entry for this session.
+        flow_type:   "auth_code" | "obo" | "agent_id_obo"
+        execute_fn:  async callable(token: str) -> dict — receives the resolved token.
+        body_token:  Token supplied directly in the request body (bypasses store lookup).
+        scope_hint:  Requested scope; used by auth_code to derive the expected audience.
 
     Raises:
         _FlowError: when no valid token is found or the token is expired.
         Any exception from execute_fn propagates unchanged.
     """
-    user_token, info_steps = await _resolve_user_token(stored, flow_type)
+    user_token, info_steps = await _resolve_user_token(
+        stored, flow_type, body_token=body_token, scope_hint=scope_hint
+    )
     if not user_token:
         raise _FlowError(
             {"error": "No user token available. Run Auth Code flow first."}
@@ -753,13 +760,14 @@ async def api_execute(request: Request, body: ExecuteRequest):
         stored = _token_store.get(sid, {})
 
         if flow_type == "auth_code":
-            user_token, info_steps = await _resolve_user_token(stored, flow_type, body_token=body.user_token, scope_hint=scope)
-            if not user_token:
-                return JSONResponse({"error": "No user token available. Sign in first."}, status_code=400)
-            if _is_token_expired(user_token):
-                return JSONResponse({"error": "token_expired", "message": "Your access token has expired. Please sign in again."}, status_code=400)
-            resource_step = await flows.call_resource(access_token=user_token, scope=scope)
-            result = {"steps": info_steps + [resource_step]}
+            async def _auth_code_fn(token, _scope=scope):
+                step = await flows.call_resource(access_token=token, scope=_scope)
+                return {"steps": [step]}
+            result = await _run_delegated_flow(
+                stored, "auth_code", _auth_code_fn,
+                body_token=body.user_token,
+                scope_hint=scope,
+            )
 
         elif flow_type == "client_credentials":
             result = await flows.execute_client_credentials(scope=scope)
