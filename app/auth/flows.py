@@ -847,16 +847,18 @@ async def execute_agent_id_autonomous(*, scope: str) -> dict:
     step1_result, parent_step = await _acquire_parent_token()
     parent_token = step1_result["response"]["body"].get("access_token")
     if not parent_token:
+        parent_step["diagram_index"] = 0
+        failed_step = _build_step(
+            label="FMI Exchange (Failed)",
+            description="Step 1 failed — no parent token acquired.",
+            highlights=_base_highlights(),
+        )
+        failed_step["diagram_index"] = 1
         return {
             "step1": step1_result,
             "step2": {"error": "Step 1 failed — no parent token acquired"},
             "steps": ([_oidc_discovery_step()] if fetched else []) + [
-                parent_step,
-                _build_step(
-                    label="FMI Exchange (Failed)",
-                    description="Step 1 failed — no parent token acquired.",
-                    highlights=_base_highlights(),
-                ),
+                parent_step, failed_step,
             ],
         }
 
@@ -906,11 +908,13 @@ async def execute_agent_id_autonomous_chain(*, scope: str) -> dict:
 
     parent_token = step1_result["response"]["body"].get("access_token")
     if not parent_token:
-        steps.append(_build_step(
+        failed_step = _build_step(
             label="FMI Exchange (Failed)",
             description="Step 1 failed — no parent token acquired.",
             highlights=_base_highlights(),
-        ))
+        )
+        failed_step["diagram_index"] = 1
+        steps.append(failed_step)
         return {"steps": steps}
 
     # Step 2: Exchange parent token for API A token
@@ -923,11 +927,13 @@ async def execute_agent_id_autonomous_chain(*, scope: str) -> dict:
 
     access_token = step2_result["response"]["body"].get("access_token")
     if not access_token:
-        steps.append(_build_step(
+        skipped_step = _build_step(
             label="Call API A (Skipped)",
             description="FMI exchange did not return an access token.",
             highlights=_base_highlights(),
-        ))
+        )
+        skipped_step["diagram_index"] = 2
+        steps.append(skipped_step)
         return {"steps": steps}
 
     # Step 3: Call API A /chain
