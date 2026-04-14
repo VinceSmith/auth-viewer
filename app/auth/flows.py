@@ -63,7 +63,7 @@ def _oidc_discovery_step() -> dict:
         ]
         if doc.get(k)
     }
-    return _build_step(
+    step = _build_step(
         label="OIDC Discovery",
         description="Before making any OAuth requests, the client fetches the "
                     "OpenID Connect discovery document to learn the authorization "
@@ -85,6 +85,8 @@ def _oidc_discovery_step() -> dict:
         },
         highlights=_base_highlights(),
     )
+    step["diagram_index"] = -1
+    return step
 
 
 def _token_endpoint() -> str:
@@ -664,17 +666,19 @@ async def execute_client_credentials(*, scope: str) -> dict:
         "scope": _coerce_default_scope(scope),
     }
     result = await _post_token_endpoint(_token_endpoint(), params)
-    steps = ([_oidc_discovery_step()] if fetched else []) + [
-        _result_to_step(
-            result,
-            label="Client Credentials",
-            description="App authenticates directly with client_id + client_secret. "
-                        "No user involvement. Returns an app-only access token."
-                        + coercion_note,
-        ),
-    ]
+    cc_step = _result_to_step(
+        result,
+        label="Client Credentials",
+        description="App authenticates directly with client_id + client_secret. "
+                    "No user involvement. Returns an app-only access token."
+                    + coercion_note,
+    )
+    cc_step["diagram_index"] = 0
+    steps = ([_oidc_discovery_step()] if fetched else []) + [cc_step]
 
-    steps.append(await _call_resource_or_skip(result, scope))
+    resource_step = await _call_resource_or_skip(result, scope)
+    resource_step["diagram_index"] = 1
+    steps.append(resource_step)
 
     result["steps"] = steps
     return result
@@ -705,15 +709,15 @@ async def execute_client_credentials_chain(*, scope: str) -> dict:
         "scope": _coerce_default_scope(f"api://{settings.api_a_app_id}/.default"),
     }
     result = await _post_token_endpoint(_token_endpoint(), params)
-    steps = ([_oidc_discovery_step()] if fetched else []) + [
-        _result_to_step(
-            result,
-            label="Client Credentials for API A",
-            description="Client app authenticates with client_id + client_secret to get "
-                        "an app-only token for API A. No user involvement."
-                        + cc_coercion_note,
-        ),
-    ]
+    cc_api_a_step = _result_to_step(
+        result,
+        label="Client Credentials for API A",
+        description="Client app authenticates with client_id + client_secret to get "
+                    "an app-only token for API A. No user involvement."
+                    + cc_coercion_note,
+    )
+    cc_api_a_step["diagram_index"] = 0
+    steps = ([_oidc_discovery_step()] if fetched else []) + [cc_api_a_step]
 
     access_token = result.get("response", {}).get("body", {}).get("access_token")
     if not access_token:
@@ -733,10 +737,14 @@ async def execute_client_credentials_chain(*, scope: str) -> dict:
                     "jwks_uri, matches kid, verifies RS256 signature, checks aud = "
                     "API A's app ID, checks issuer + expiry.",
     )
+    chain_step["diagram_index"] = 1
     steps.append(chain_step)
 
-    # Steps 3–4: Parse chain response
-    steps.extend(_parse_chain_response(api_a_body, downstream_label, downstream_url))
+    # Steps 3–4: Parse chain response (CC downstream=2, Call downstream=3)
+    chain_response_steps = _parse_chain_response(api_a_body, downstream_label, downstream_url)
+    for i, chain_item in enumerate(chain_response_steps):
+        chain_item["diagram_index"] = 2 + i
+    steps.extend(chain_response_steps)
 
     result["steps"] = steps
     return result
@@ -756,7 +764,9 @@ async def execute_obo(
 
     # ── Step 1: Call API A with the user token ──
     api_a_scope = settings.api_a_scope or f"api://{settings.api_a_app_id}/access_as_user"
-    steps.append(await _call_resource(access_token=user_access_token, scope=api_a_scope))
+    call_api_a_step = await _call_resource(access_token=user_access_token, scope=api_a_scope)
+    call_api_a_step["diagram_index"] = 2
+    steps.append(call_api_a_step)
 
     # ── Step 2: OBO token exchange ──
     result = await _obo_token_exchange(
@@ -779,10 +789,13 @@ async def execute_obo(
                     "downstream API."
                     + _user_read_note(obo_payload),
     )
+    exchange_step["diagram_index"] = 3
     steps.append(exchange_step)
 
     # ── Step 3: Call downstream resource with the exchanged token ──
-    steps.append(await _call_resource_or_skip(result, scope))
+    downstream_step = await _call_resource_or_skip(result, scope)
+    downstream_step["diagram_index"] = 4
+    steps.append(downstream_step)
 
     result["steps"] = steps
     return result
@@ -848,9 +861,13 @@ async def execute_agent_id_autonomous(*, scope: str) -> dict:
         }
 
     step2_result, exchange_step = await _fmi_exchange(parent_token, scope)
+    parent_step["diagram_index"] = 0
+    exchange_step["diagram_index"] = 1
     steps = ([_oidc_discovery_step()] if fetched else []) + [parent_step, exchange_step]
 
-    steps.append(await _call_resource_or_skip(step2_result, scope))
+    call_step = await _call_resource_or_skip(step2_result, scope)
+    call_step["diagram_index"] = 2
+    steps.append(call_step)
 
     return {
         "step1": step1_result,
@@ -884,6 +901,7 @@ async def execute_agent_id_autonomous_chain(*, scope: str) -> dict:
 
     # Step 1: Parent token
     step1_result, parent_step = await _acquire_parent_token()
+    parent_step["diagram_index"] = 0
     steps = ([_oidc_discovery_step()] if fetched else []) + [parent_step]
 
     parent_token = step1_result["response"]["body"].get("access_token")
@@ -900,6 +918,7 @@ async def execute_agent_id_autonomous_chain(*, scope: str) -> dict:
     step2_result, exchange_step = await _fmi_exchange(
         parent_token, api_a_scope, label="FMI Exchange (Agent → API A)",
     )
+    exchange_step["diagram_index"] = 1
     steps.append(exchange_step)
 
     access_token = step2_result["response"]["body"].get("access_token")
@@ -920,10 +939,14 @@ async def execute_agent_id_autonomous_chain(*, scope: str) -> dict:
                     "issuer + expiry. The sub claim identifies the Agent Identity "
                     "as the caller.",
     )
+    chain_step["diagram_index"] = 2
     steps.append(chain_step)
 
-    # Steps 4–5: Parse chain response
-    steps.extend(_parse_chain_response(api_a_body, downstream_label, downstream_url))
+    # Steps 4–5: Parse chain response (CC downstream=3, Call downstream=4)
+    chain_response_steps = _parse_chain_response(api_a_body, downstream_label, downstream_url)
+    for i, chain_item in enumerate(chain_response_steps):
+        chain_item["diagram_index"] = 3 + i
+    steps.extend(chain_response_steps)
 
     return {"steps": steps}
 
@@ -967,7 +990,20 @@ async def execute_agent_id_obo(*, user_token: str, scope: str) -> dict:
             ],
         }
 
-    # Determine whether the target scope involves API A (chained) or goes direct
+    # A `via_api_a:` prefix means the UI explicitly selected a chain-through-API-A
+    # target (e.g. "API A → API B (OBO)").  Strip the prefix and extract the real
+    # downstream scope before routing.
+    chain_prefix = "via_api_a:"
+    if scope.startswith(chain_prefix):
+        downstream_scope = scope[len(chain_prefix):]
+        return await _agent_id_obo_chain(
+            user_token=user_token, scope=downstream_scope,
+            parent_token=parent_token, parent_step=parent_step,
+            step1_result=step1_result, steps_prefix=steps_prefix,
+        )
+
+    # Fallback: detect chained path by checking whether API A's app ID appears in the
+    # scope string (e.g. when the scope itself is the API A scope).
     api_a_scope_id = settings.api_a_app_id or ""
     targets_api_a = api_a_scope_id and api_a_scope_id in scope
 
@@ -1017,8 +1053,11 @@ async def execute_agent_id_obo(*, user_token: str, scope: str) -> dict:
             **decoded_user,
         }
 
-    steps = steps_prefix + [parent_step, exchange_step]
-    steps.append(await _call_resource_or_skip(step2_result, scope))
+    parent_step["diagram_index"] = 2
+    exchange_step["diagram_index"] = 3
+    call_step = await _call_resource_or_skip(step2_result, scope)
+    call_step["diagram_index"] = 4
+    steps = steps_prefix + [parent_step, exchange_step, call_step]
 
     return {
         "step1": step1_result,
@@ -1069,6 +1108,8 @@ async def _agent_id_obo_chain(
             **decoded_user,
         }
 
+    parent_step["diagram_index"] = 2
+    exchange_step["diagram_index"] = 3
     steps = steps_prefix + [parent_step, exchange_step]
 
     api_a_token = step2_result["response"]["body"].get("access_token")
@@ -1081,7 +1122,9 @@ async def _agent_id_obo_chain(
         return {"step1": step1_result, "step2": step2_result, "steps": steps}
 
     # Call API A with the agent token
-    steps.append(await _call_resource(access_token=api_a_token, scope=api_a_scope))
+    call_api_a_step = await _call_resource(access_token=api_a_token, scope=api_a_scope)
+    call_api_a_step["diagram_index"] = 4
+    steps.append(call_api_a_step)
 
     # OBO exchange — API A exchanges agent's token for downstream (API B)
     # If the target scope is API A itself, there's no downstream — just stop here.
@@ -1104,10 +1147,13 @@ async def _agent_id_obo_chain(
                         "but the user's identity is preserved."
                         + _user_read_note(agent_obo_payload),
         )
+        obo_step["diagram_index"] = 5
         steps.append(obo_step)
 
         # Call downstream resource (API B / Graph)
-        steps.append(await _call_resource_or_skip(obo_result, scope))
+        downstream_step = await _call_resource_or_skip(obo_result, scope)
+        downstream_step["diagram_index"] = 6
+        steps.append(downstream_step)
 
     return {
         "step1": step1_result,

@@ -295,6 +295,7 @@ async def _resolve_user_token(
                                     f"audience — tokens are not interchangeable between APIs.",
                         highlights=flows._base_highlights(),
                     ))
+                    info_steps[-1]["diagram_index"] = -1
                     break  # Only show the first mismatch
 
     # Silent acquire fallback
@@ -320,6 +321,7 @@ async def _resolve_user_token(
                     token = new_token
                     silent_step = silent.get("step")
                     if silent_step:
+                        silent_step["diagram_index"] = -1
                         info_steps.append(silent_step)
                     # Store for future reuse
                     new_rt = silent.get("response", {}).get("body", {}).get("refresh_token", rt)
@@ -343,6 +345,7 @@ async def _resolve_user_token(
                         f"{'Expires: ' + exp_utc + '.' if exp_utc else ''}",
             highlights=flows._base_highlights(),
         ))
+        info_steps[-1]["diagram_index"] = -1
 
     return token, info_steps
 
@@ -622,6 +625,10 @@ async def auth_callback(request: Request, code: str = "", state: str = "", error
     authorize_step = _result_store.pop(f"step_{authorize_step_id}", None) if authorize_step_id else None
     discovery_step = _result_store.pop(f"discovery_{authorize_step_id}", None) if authorize_step_id else None
     exchange_step = result.get("exchange_step")
+    if authorize_step:
+        authorize_step["diagram_index"] = 0
+    if exchange_step:
+        exchange_step["diagram_index"] = 1
     auth_steps = []
     if discovery_step:
         auth_steps.append(discovery_step)
@@ -655,6 +662,7 @@ async def auth_callback(request: Request, code: str = "", state: str = "", error
             }},
             highlights=flows._base_highlights(),
         )
+        handoff["diagram_index"] = -1
         result["steps"] = auth_steps + [handoff] + obo_steps
     elif flow_type == "agent_id_obo" and user_token:
         agent_result = await flows.execute_agent_id_obo(
@@ -676,6 +684,7 @@ async def auth_callback(request: Request, code: str = "", state: str = "", error
             }},
             highlights=flows._base_highlights(),
         )
+        handoff["diagram_index"] = -1
         result["steps"] = auth_steps + [handoff] + agent_steps
     else:
         result["steps"] = auth_steps
@@ -685,6 +694,7 @@ async def auth_callback(request: Request, code: str = "", state: str = "", error
             resource_step = await flows.call_resource(
                 access_token=user_token, scope=call_scope,
             )
+            resource_step["diagram_index"] = 2
             result["steps"].append(resource_step)
 
     # Extract subjects from decoded tokens
@@ -692,11 +702,8 @@ async def auth_callback(request: Request, code: str = "", state: str = "", error
 
     # For profile-only logins (no resource scope), store result but redirect to home
     if not has_resource_scope:
-        # Store bootstrap explanation as context (not a step) so it doesn't
-        # break 1:1 mapping between step pills and sequence diagram rects.
-        # Strip steps so the step visualizer stays clean — the context banner
-        # is enough to explain what happened.
-        result.pop("steps", None)
+        # Keep steps so the visualizer shows Authorize + Token Exchange pills that
+        # match the diagram rects. Add a context banner to explain what happened.
         result["context"] = (
             "This Auth Code flow was triggered automatically to establish your session. "
             "The scopes 'openid profile offline_access' make this an OpenID Connect "
@@ -762,6 +769,7 @@ async def api_execute(request: Request, body: ExecuteRequest):
         if flow_type == "auth_code":
             async def _auth_code_fn(token, _scope=scope):
                 step = await flows.call_resource(access_token=token, scope=_scope)
+                step["diagram_index"] = 2
                 return {"steps": [step]}
             result = await _run_delegated_flow(
                 stored, "auth_code", _auth_code_fn,

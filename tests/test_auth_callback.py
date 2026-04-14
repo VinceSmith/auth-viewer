@@ -200,3 +200,125 @@ def test_callback_sets_last_flow_in_session():
         "The callback sets last_flow='profile_login' for non-resource-scope flows "
         "instead of preserving the actual flow_type from the session."
     )
+
+
+def test_callback_profile_login_stores_steps_with_authorize_and_exchange():
+    """BUG: session bootstrap callback strips 'steps' from the stored result.
+    The frontend renders no step pills when steps=[].
+    The profile_login diagram has two labeled rects (Authorize, Token Exchange);
+    the stored result must include both as step objects so the pills appear."""
+    from app.main import _result_store
+    access_token, id_token = _make_tokens()
+    mock_result = _success_result(access_token, id_token)
+    # Inject a fake authorize step so auth_steps is non-empty
+    mock_result["exchange_step"] = {
+        "label": "Token Exchange",
+        "request": {"method": "POST", "url": "https://login.example.com/token"},
+        "response": {"status": 200, "body": {}},
+        "tokens": {},
+        "highlights": [],
+        "description": "",
+    }
+    client = TestClient(app, raise_server_exceptions=False)
+
+    with patch("app.main.flows.exchange_auth_code", new_callable=AsyncMock) as mock_ex:
+        mock_ex.return_value = mock_result
+        resp = client.get(
+            f"/auth/callback?code={FAKE_CODE}&state={FAKE_STATE}",
+            cookies={"session": _base_cookie()},
+            allow_redirects=False,
+        )
+
+    assert resp.status_code == 303
+
+    # Decode result_id from the session cookie
+    raw_cookie = resp.cookies.get("session", "")
+    signer = TimestampSigner(settings.session_secret)
+    data = signer.unsign(raw_cookie, return_timestamp=False)
+    session_data = json.loads(base64.b64decode(data))
+    result_id = session_data.get("result_id")
+    assert result_id, "No result_id in session — callback didn't store the result"
+
+    stored = _result_store.get(result_id)
+    assert stored is not None, "result_id not found in _result_store"
+    assert stored.get("flow_type") == "profile_login"
+
+    steps = stored["result"].get("steps")
+    assert steps is not None, (
+        "BUG: 'steps' was stripped from profile_login result. "
+        "The frontend shows no step pills."
+    )
+    assert len(steps) >= 1, f"Expected at least 1 step, got: {steps}"
+    labels = [s.get("label", "") for s in steps]
+    assert any("Token Exchange" in l or "Exchange" in l for l in labels), (
+        f"Expected a Token Exchange step pill; got labels: {labels}"
+    )
+
+
+def test_auth_callback_authorize_step_diagram_index():
+    """authorize_step must carry diagram_index=0 (maps to first rect in profile_login diagram)."""
+    import secrets
+    from app.main import _result_store
+    access_token, id_token = _make_tokens()
+    mock_result = _success_result(access_token, id_token)
+    mock_result["exchange_step"] = {
+        "label": "Token Exchange",
+        "request": {"method": "POST", "url": "https://login.example.com/token"},
+        "response": {"status": 200, "body": {}},
+        "tokens": {},
+        "highlights": [],
+        "description": "",
+    }
+
+    # Inject a fake authorize_step via _result_store
+    step_id = secrets.token_urlsafe(16)
+    fake_authorize_step = {
+        "label": "Authorization Redirect",
+        "request": {"method": "GET", "url": "https://login.example.com/authorize"},
+        "response": {"status": 302, "body": {}},
+        "tokens": {},
+        "highlights": [],
+        "description": "",
+    }
+    _result_store[f"step_{step_id}"] = fake_authorize_step
+
+    cookie = make_session_cookie({
+        "sid": FAKE_SID,
+        "oauth_state": FAKE_STATE,
+        "oauth_scope": "openid profile",
+        "flow_type": "auth_code",
+        "target_scope": "",
+        "authorize_step_id": step_id,
+    })
+    client = TestClient(app, raise_server_exceptions=False)
+
+    with patch("app.main.flows.exchange_auth_code", new_callable=AsyncMock) as mock_ex:
+        mock_ex.return_value = mock_result
+        resp = client.get(
+            f"/auth/callback?code={FAKE_CODE}&state={FAKE_STATE}",
+            cookies={"session": cookie},
+            allow_redirects=False,
+        )
+
+    assert resp.status_code == 303
+
+    raw_cookie = resp.cookies.get("session", "")
+    signer = TimestampSigner(settings.session_secret)
+    data = signer.unsign(raw_cookie, return_timestamp=False)
+    session_data = json.loads(base64.b64decode(data))
+    result_id = session_data.get("result_id")
+    stored = _result_store.get(result_id)
+    assert stored is not None
+
+    steps = stored["result"].get("steps", [])
+    authorize = next((s for s in steps if "Authoriz" in s.get("label", "")), None)
+    exchange = next((s for s in steps if "Exchange" in s.get("label", "")), None)
+
+    assert authorize is not None, f"No authorize step found in: {[s.get('label') for s in steps]}"
+    assert authorize.get("diagram_index") == 0, (
+        f"authorize_step must have diagram_index=0, got {authorize.get('diagram_index')!r}"
+    )
+    assert exchange is not None, f"No exchange step found in: {[s.get('label') for s in steps]}"
+    assert exchange.get("diagram_index") == 1, (
+        f"exchange_step must have diagram_index=1, got {exchange.get('diagram_index')!r}"
+    )

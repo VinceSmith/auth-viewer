@@ -1,14 +1,14 @@
 /* ── Entra OAuth Explorer — Frontend Logic ── */
 
 // ── State ──
-let authCategory = 'user_auth';   // 'user_auth' | 'client_credentials'
-let clientType = 'app';            // 'app' | 'agent'
-let diagramCounter = 0;
-let currentSteps = [];
-let currentStepIndex = 0;
-let currentFlowType = '';
-let highlightMap = {};
-let diagramStepRects = [];
+var authCategory = 'user_auth';   // 'user_auth' | 'client_credentials'
+var clientType = 'app';            // 'app' | 'agent'
+var diagramCounter = 0;
+var currentSteps = [];
+var currentStepIndex = 0;
+var currentFlowType = '';
+var highlightMap = {};
+var diagramStepRects = [];
 
 // Sign-in log polling state
 let signinLogTimer = null;
@@ -529,8 +529,14 @@ function showStep(index) {
     // Populate unified detail view
     populateStepDetail(step);
 
-    // Highlight corresponding diagram rect
-    highlightDiagramStep(index);
+    // Highlight corresponding diagram rect using explicit diagram_index when available.
+    // diagram_index === -1 means no rect (e.g. OIDC Discovery, Token Handoff) — clear.
+    const diagIdx = (step.diagram_index !== undefined) ? step.diagram_index : index;
+    if (diagIdx < 0) {
+        clearDiagramHighlight();
+    } else {
+        highlightDiagramStep(diagIdx);
+    }
 }
 
 function populateStepDetail(step) {
