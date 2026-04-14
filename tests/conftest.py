@@ -94,3 +94,21 @@ def make_httpx_ctx(mock_resp: MagicMock) -> tuple[MagicMock, AsyncMock]:
     ctx.__aenter__ = AsyncMock(return_value=mock_client)
     ctx.__aexit__ = AsyncMock(return_value=False)
     return ctx, mock_client
+
+
+# Stable fake session ID — goes in session_data["sid"] for TestClient-based route tests
+FAKE_SID = "test-session-abc123456789"
+
+
+def make_session_cookie(session_data: dict) -> str:
+    """Build a Starlette SessionMiddleware-compatible signed cookie.
+
+    Replicates the exact wire format (base64 JSON payload + TimestampSigner)
+    that Starlette uses, so the cookie will be accepted by the running app.
+    """
+    from itsdangerous import TimestampSigner
+
+    from app.config import settings
+
+    payload = base64.b64encode(json.dumps(session_data).encode()).decode()
+    return TimestampSigner(settings.session_secret).sign(payload).decode()
