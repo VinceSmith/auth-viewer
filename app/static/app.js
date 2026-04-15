@@ -1378,6 +1378,7 @@ function resolveClaimValue(key, value) {
 // ══════════════════════════════════════════════════════════════════════════
 
 document.addEventListener('mouseenter', (e) => {
+    if (typeof e.target?.closest !== 'function') return;
     const cell = e.target.closest('.claim-name');
     if (!cell) return;
     const tip = cell.querySelector('.claim-tip');
@@ -1389,6 +1390,7 @@ document.addEventListener('mouseenter', (e) => {
 }, true);
 
 document.addEventListener('mouseleave', (e) => {
+    if (typeof e.target?.closest !== 'function') return;
     const cell = e.target.closest('.claim-name');
     if (!cell) return;
     const tip = cell.querySelector('.claim-tip');
