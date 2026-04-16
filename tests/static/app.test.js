@@ -846,6 +846,63 @@ describe('execute flow: uses diagram from API response, not getDiagramKey()', ()
 });
 
 
+// ---------------------------------------------------------------------------
+// Silent acquire: error from /api/execute must be shown, not swallowed
+// ---------------------------------------------------------------------------
+
+describe('silent acquire: execute error handling', () => {
+  function createAppWithFetch(fetchImpl) {
+    const dom = new JSDOM(MINIMAL_HTML, { runScripts: 'dangerously', url: 'http://localhost:8000' });
+    const win = dom.window;
+    const doc = win.document;
+    win.STEP_FILLS = DEFAULT_STEP_FILLS;
+    win.fetch = fetchImpl;
+    win.mermaid = {
+      initialize: () => {},
+      render: (id, code) => Promise.resolve({ svg: '<svg></svg>' }),
+    };
+    const _origGetById = doc.getElementById.bind(doc);
+    doc.getElementById = (id) => _origGetById(id) || doc.createElement('div');
+    win.setInterval = () => 0;
+    win.clearInterval = () => {};
+    dom.window.eval(APP_JS);
+    return win;
+  }
+
+  test('shows error when silent acquire succeeds but execute returns an error', async () => {
+    const w = createAppWithFetch((url) => {
+      if (url === '/api/silent-acquire') {
+        return Promise.resolve({
+          ok: true,
+          json: () => Promise.resolve({ access_token: 'fake-token' }),
+        });
+      }
+      if (url === '/api/execute') {
+        return Promise.resolve({
+          ok: false,
+          json: () => Promise.resolve({ error: 'token_expired', message: 'Your token has expired' }),
+        });
+      }
+      return Promise.resolve({ ok: true, json: () => Promise.resolve({}) });
+    });
+
+    // Wait for DOMContentLoaded async ops
+    await new Promise(r => setTimeout(r, 50));
+
+    // Check "reuse session" checkbox to trigger silent acquire path
+    w.document.getElementById('reuse-id-token').checked = true;
+    // authCategory defaults to 'user_auth' in MINIMAL_HTML
+
+    w.document.getElementById('btn-execute').click();
+    await new Promise(r => setTimeout(r, 100));
+
+    // Error must be displayed in the response panel, not silently swallowed
+    const respDisplay = w.document.getElementById('resp-display');
+    expect(respDisplay.textContent).toMatch(/token_expired|Your token has expired/);
+  });
+});
+
+
 describe('httpStatusText', () => {
   let w;
   beforeEach(() => { w = createApp(); });

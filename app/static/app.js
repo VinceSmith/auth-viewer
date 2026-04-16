@@ -763,7 +763,17 @@ btnExecute.addEventListener('click', async () => {
                         body: JSON.stringify(execPayload),
                     });
                     const execData = await execResp.json();
-                    if (!execData.error) {
+                    if (execData.error) {
+                        // Execute failed after silent token — show error, don't redirect
+                        setSteps([]);
+                        await loadDiagram(getDiagramKey());
+                        if (execData.error === 'token_expired') {
+                            showTokenExpiredError(execData.message || 'Your access token has expired. Please sign in again.');
+                        } else {
+                            showError(execData.message || execData.error);
+                        }
+                        silentOk = true;  // prevent fallthrough to redirect
+                    } else {
                         const result = execData.result;
                         if (result && result.steps && result.steps.length > 0) {
                             setSteps(result.steps);
