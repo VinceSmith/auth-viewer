@@ -127,6 +127,38 @@ auth-viewer/
 └── requirements.txt
 ```
 
+## Deploy to Azure
+
+The app can be deployed to **Azure Container Apps** (three containers sharing one Docker image).
+
+### First-time deployment (manual)
+
+Run the PowerShell script once to create all Azure resources:
+
+```powershell
+# Uses the subscription ID in the script; pass -SubscriptionId to override
+.\scripts\deploy_azure.ps1
+```
+
+This creates a Resource Group, Azure Container Registry, Container Apps environment, and
+three container apps (main app, API A, API B). It prints the live URL when done.
+
+> After first deploy, update the Entra app registration redirect URI as shown in the
+> script output (manual step — requires `az login` to the Entra tenant).
+
+### Continuous deployment (GitHub Actions)
+
+A [GitHub Actions workflow](.github/workflows/deploy.yml) automatically redeploys on every
+push to `main`. Configure these **repository secrets** first:
+
+| Secret | How to obtain |
+|--------|---------------|
+| `AZURE_CREDENTIALS` | JSON from `az ad sp create-for-rbac --name github-auth-viewer --role contributor --scopes /subscriptions/<SUBSCRIPTION_ID>/resourceGroups/rg-auth-viewer --sdk-auth`. Copy the entire JSON output and store it as this secret. |
+| `AZURE_SUBSCRIPTION_ID` | Your Azure subscription ID (e.g. `eed3fbe8-...`) |
+
+You can also trigger the workflow manually from the **Actions** tab with optional overrides
+for the resource group and ACR name.
+
 ## Testing
 
 ```powershell
