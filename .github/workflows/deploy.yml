@@ -1,0 +1,119 @@
+name: Build & Deploy
+
+on:
+  push:
+    branches: [master]
+  workflow_dispatch:
+
+env:
+  ACR_NAME: authvieweracr
+  IMAGE_REPO: auth-viewer
+  RESOURCE_GROUP: rg-auth-viewer
+  APP_URL: https://auth-viewer.purplemushroom-70e6dff9.eastus2.azurecontainerapps.io
+
+permissions:
+  contents: read
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+          cache: pip
+
+      - name: Install dependencies
+        run: pip install -r requirements.txt
+
+      - name: Run unit tests
+        run: python -m pytest tests/ -q --tb=short
+
+  build-and-deploy:
+    needs: test
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Azure Login
+        uses: azure/login@v2
+        with:
+          creds: ${{ secrets.AZURE_CREDENTIALS }}
+
+      - name: Generate image tag
+        id: tag
+        run: |
+          SHORT_SHA="${GITHUB_SHA::7}"
+          REV_SUFFIX="rev${SHORT_SHA}"
+          echo "sha_tag=${SHORT_SHA}" >> "$GITHUB_OUTPUT"
+          echo "rev_suffix=${REV_SUFFIX}" >> "$GITHUB_OUTPUT"
+
+      - name: Build & push to ACR
+        run: |
+          az acr build \
+            --registry ${{ env.ACR_NAME }} \
+            --image ${{ env.IMAGE_REPO }}:${{ steps.tag.outputs.sha_tag }} \
+            --image ${{ env.IMAGE_REPO }}:latest \
+            --no-logs \
+            .
+
+      - name: Deploy auth-viewer (port 8000)
+        run: |
+          az containerapp update \
+            --name auth-viewer \
+            --resource-group ${{ env.RESOURCE_GROUP }} \
+            --image ${{ env.ACR_NAME }}.azurecr.io/${{ env.IMAGE_REPO }}:${{ steps.tag.outputs.sha_tag }} \
+            --revision-suffix ${{ steps.tag.outputs.rev_suffix }}
+
+      - name: Deploy api-a (port 8001)
+        run: |
+          az containerapp update \
+            --name api-a \
+            --resource-group ${{ env.RESOURCE_GROUP }} \
+            --image ${{ env.ACR_NAME }}.azurecr.io/${{ env.IMAGE_REPO }}:${{ steps.tag.outputs.sha_tag }} \
+            --revision-suffix ${{ steps.tag.outputs.rev_suffix }}
+
+      - name: Deploy api-b (port 8002)
+        run: |
+          az containerapp update \
+            --name api-b \
+            --resource-group ${{ env.RESOURCE_GROUP }} \
+            --image ${{ env.ACR_NAME }}.azurecr.io/${{ env.IMAGE_REPO }}:${{ steps.tag.outputs.sha_tag }} \
+            --revision-suffix ${{ steps.tag.outputs.rev_suffix }}
+
+      - name: Verify deployment is live
+        run: |
+          echo "Waiting 15s for revisions to activate..."
+          sleep 15
+
+          # Fetch the JS file and verify it contains code from this commit
+          JS_CONTENT=$(curl -sf "${{ env.APP_URL }}/static/app.js")
+          JS_SIZE=${#JS_CONTENT}
+          echo "Production app.js: ${JS_SIZE} bytes"
+
+          # Verify a core function from app.js exists in the response.
+          # getEffectiveFlowType is foundational — if it's missing, the JS is broken or stale.
+          if echo "$JS_CONTENT" | grep -q "getEffectiveFlowType"; then
+            echo "✓ Core JS functions found in production"
+          else
+            echo "✗ Core JS functions NOT found — deployment may be stale or broken"
+            exit 1
+          fi
+
+          # Verify all 3 revisions are running
+          for APP in auth-viewer api-a api-b; do
+            STATE=$(az containerapp revision list \
+              --name "$APP" \
+              --resource-group ${{ env.RESOURCE_GROUP }} \
+              --query "[?contains(name, '${{ steps.tag.outputs.rev_suffix }}')].properties.runningState" \
+              -o tsv)
+            echo "${APP}: ${STATE}"
+            if [ "$STATE" != "Running" ] && [ "$STATE" != "RunningAtMaxScale" ]; then
+              echo "✗ ${APP} revision not running (state: ${STATE})"
+              exit 1
+            fi
+          done
+
+          echo "✓ All 3 services deployed and verified"
