@@ -66,10 +66,22 @@ def patch_settings(monkeypatch):
 
 
 @pytest.fixture(autouse=True)
-def clear_module_caches():
-    """Clear module-level caches in flows.py and main.py before and after every test."""
+def clear_module_caches(monkeypatch):
+    """Clear module-level caches in flows.py and main.py before and after every test.
+
+    Also patches main.settings with fake IDs so audience validation works
+    on CI where no .env file exists.
+    """
     from app.auth import flows
     from app.main import _token_store
+    from app import main as _main_module
+
+    # Ensure main.settings has fake IDs (CI has no .env)
+    monkeypatch.setattr(_main_module.settings, "api_a_app_id", FAKE_API_A_ID)
+    monkeypatch.setattr(_main_module.settings, "api_b_app_id", FAKE_API_B_ID)
+    monkeypatch.setattr(_main_module.settings, "client_id", FAKE_CLIENT_ID)
+    monkeypatch.setattr(_main_module.settings, "agent_blueprint_app_id", FAKE_BLUEPRINT_ID)
+    monkeypatch.setattr(_main_module.settings, "api_a_scope", f"api://{FAKE_API_A_ID}/access_as_user")
 
     flows._oidc_cache.clear()
     flows._graph_cc_cache.update({"access_token": "", "expires_at": 0.0})

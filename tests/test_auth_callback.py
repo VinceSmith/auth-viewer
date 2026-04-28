@@ -67,7 +67,7 @@ def test_callback_happy_path_redirects_to_root():
         resp = client.get(
             f"/auth/callback?code={FAKE_CODE}&state={FAKE_STATE}",
             cookies={"session": _base_cookie()},
-            allow_redirects=False,
+            follow_redirects=False,
         )
 
     assert resp.status_code == 303
@@ -90,7 +90,7 @@ def test_callback_stores_tokens_in_token_store():
         resp = client.get(
             f"/auth/callback?code={FAKE_CODE}&state={FAKE_STATE}",
             cookies={"session": cookie},
-            allow_redirects=False,
+            follow_redirects=False,
         )
 
     assert resp.status_code == 303
@@ -110,7 +110,7 @@ def test_callback_stores_user_profile():
         resp = client.get(
             f"/auth/callback?code={FAKE_CODE}&state={FAKE_STATE}",
             cookies={"session": _base_cookie()},
-            allow_redirects=False,
+            follow_redirects=False,
         )
 
     assert resp.status_code == 303
@@ -127,7 +127,7 @@ def test_callback_state_mismatch_returns_error_page():
     resp = client.get(
         f"/auth/callback?code={FAKE_CODE}&state=WRONG_STATE_VALUE",
         cookies={"session": _base_cookie()},
-        allow_redirects=False,
+        follow_redirects=False,
     )
 
     assert resp.status_code == 200, "State mismatch should render an error page (200), not redirect"
@@ -141,7 +141,7 @@ def test_callback_entra_error_param_renders_error_page():
     resp = client.get(
         "/auth/callback?error=access_denied&error_description=User+cancelled",
         cookies={"session": _base_cookie()},
-        allow_redirects=False,
+        follow_redirects=False,
     )
 
     assert resp.status_code == 200
@@ -165,7 +165,7 @@ def test_callback_exchange_error_body_does_not_silently_succeed():
         resp = client.get(
             f"/auth/callback?code={FAKE_CODE}&state={FAKE_STATE}",
             cookies={"session": _base_cookie()},
-            allow_redirects=False,
+            follow_redirects=False,
         )
 
     assert resp.status_code != 303, (
@@ -185,7 +185,7 @@ def test_callback_sets_last_flow_in_session():
         resp = client.get(
             f"/auth/callback?code={FAKE_CODE}&state={FAKE_STATE}",
             cookies={"session": _base_cookie()},
-            allow_redirects=False,
+            follow_redirects=False,
         )
 
     assert resp.status_code == 303
@@ -226,7 +226,7 @@ def test_callback_profile_login_stores_steps_with_authorize_and_exchange():
         resp = client.get(
             f"/auth/callback?code={FAKE_CODE}&state={FAKE_STATE}",
             cookies={"session": _base_cookie()},
-            allow_redirects=False,
+            follow_redirects=False,
         )
 
     assert resp.status_code == 303
@@ -297,7 +297,7 @@ def test_auth_callback_authorize_step_diagram_index():
         resp = client.get(
             f"/auth/callback?code={FAKE_CODE}&state={FAKE_STATE}",
             cookies={"session": cookie},
-            allow_redirects=False,
+            follow_redirects=False,
         )
 
     assert resp.status_code == 303
