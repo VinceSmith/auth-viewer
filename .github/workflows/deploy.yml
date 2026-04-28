@@ -85,16 +85,12 @@ jobs:
 
       - name: Verify deployment is live
         run: |
-          echo "Waiting 15s for revisions to activate..."
-          sleep 15
-
           # Fetch the JS file and verify it contains code from this commit
           JS_CONTENT=$(curl -sf "${{ env.APP_URL }}/static/app.js")
           JS_SIZE=${#JS_CONTENT}
           echo "Production app.js: ${JS_SIZE} bytes"
 
           # Verify a core function from app.js exists in the response.
-          # getEffectiveFlowType is foundational — if it's missing, the JS is broken or stale.
           if echo "$JS_CONTENT" | grep -q "getEffectiveFlowType"; then
             echo "✓ Core JS functions found in production"
           else
@@ -102,16 +98,23 @@ jobs:
             exit 1
           fi
 
-          # Verify all 3 revisions are running
+          # Verify all 3 revisions are running (retry up to 90s for activation)
           for APP in auth-viewer api-a api-b; do
-            STATE=$(az containerapp revision list \
-              --name "$APP" \
-              --resource-group ${{ env.RESOURCE_GROUP }} \
-              --query "[?contains(name, '${{ steps.tag.outputs.rev_suffix }}')].properties.runningState" \
-              -o tsv)
-            echo "${APP}: ${STATE}"
+            for i in $(seq 1 6); do
+              STATE=$(az containerapp revision list \
+                --name "$APP" \
+                --resource-group ${{ env.RESOURCE_GROUP }} \
+                --query "[?contains(name, '${{ steps.tag.outputs.rev_suffix }}')].properties.runningState" \
+                -o tsv)
+              if [ "$STATE" = "Running" ] || [ "$STATE" = "RunningAtMaxScale" ]; then
+                echo "✓ ${APP}: ${STATE}"
+                break
+              fi
+              echo "${APP}: ${STATE} (attempt ${i}/6, waiting 15s...)"
+              sleep 15
+            done
             if [ "$STATE" != "Running" ] && [ "$STATE" != "RunningAtMaxScale" ]; then
-              echo "✗ ${APP} revision not running (state: ${STATE})"
+              echo "✗ ${APP} revision not running after 90s (state: ${STATE})"
               exit 1
             fi
           done
