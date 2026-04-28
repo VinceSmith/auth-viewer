@@ -498,7 +498,7 @@ async def auth_logout(request: Request):
 async def auth_login(
     request: Request, scope: str = "",
     flow_type: str = "", target_scope: str = "",
-    prompt: str = "",
+    prompt: str = "", chain_target: str = "",
 ):
     """Start an authorization code flow by redirecting the user to Entra."""
     state = secrets.token_urlsafe(32)
@@ -513,6 +513,7 @@ async def auth_login(
         request.session["oauth_scope"] = f"openid profile offline_access {settings.agent_blueprint_scope}"
         request.session["flow_type"] = "agent_id_obo"
         request.session["target_scope"] = target_scope
+        request.session["chain_target"] = chain_target
     else:
         request.session["oauth_scope"] = scope or f"openid profile offline_access {settings.api_a_scope}"
         # Ensure offline_access is present so we get a refresh token
@@ -542,6 +543,7 @@ async def auth_login(
         "oauth_scope": request.session["oauth_scope"],
         "flow_type": request.session["flow_type"],
         "target_scope": request.session.get("target_scope", ""),
+        "chain_target": request.session.get("chain_target", ""),
         "authorize_step_id": request.session.get("authorize_step_id"),
     }
     # Keep only last 5 to stay well within cookie size limits
@@ -614,6 +616,7 @@ async def auth_callback(request: Request, code: str = "", state: str = "", error
         request.session["oauth_scope"] = pending["oauth_scope"]
         request.session["flow_type"] = pending["flow_type"]
         request.session["target_scope"] = pending["target_scope"]
+        request.session["chain_target"] = pending.get("chain_target", "")
         if pending.get("auth_request"):
             request.session["auth_request"] = pending["auth_request"]
         if pending.get("authorize_step_id"):
@@ -716,8 +719,9 @@ async def auth_callback(request: Request, code: str = "", state: str = "", error
         handoff["diagram_index"] = -1
         result["steps"] = auth_steps + [handoff] + obo_steps
     elif flow_type == "agent_id_obo" and user_token:
+        chain_target = request.session.pop("chain_target", "")
         agent_result = await flows.execute_agent_id_obo(
-            user_token=user_token, scope=target_scope,
+            user_token=user_token, scope=target_scope, chain_target=chain_target,
         )
         # Replace Agent ID OBO's generic "User Token (Input)" with a handoff step
         agent_steps = agent_result.get("steps", [])
@@ -797,6 +801,7 @@ class ExecuteRequest(BaseModel):
     flow_type: str
     scope: str = ""
     user_token: str = ""
+    chain_target: str = ""
 
 
 class SilentAcquireRequest(BaseModel):
@@ -847,9 +852,12 @@ async def api_execute(request: Request, body: ExecuteRequest):
             result = await flows.execute_agent_id_autonomous_chain(scope=scope)
 
         elif flow_type == "agent_id_obo":
+            chain_target = body.chain_target
             result = await _run_delegated_flow(
                 stored, "agent_id_obo",
-                lambda token: flows.execute_agent_id_obo(user_token=token, scope=scope),
+                lambda token: flows.execute_agent_id_obo(
+                    user_token=token, scope=scope, chain_target=chain_target,
+                ),
             )
 
         else:

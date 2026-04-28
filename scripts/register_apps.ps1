@@ -63,6 +63,14 @@ $bodyFile = "$env:TEMP\auth-viewer-api-b.json"
         "value": "read"
       }
     ]
+  },
+  "optionalClaims": {
+    "accessToken": [
+      {"name": "xms_tnt_fct", "essential": false},
+      {"name": "xms_sub_fct", "essential": false},
+      {"name": "xms_act_fct", "essential": false},
+      {"name": "xms_par_app_azp", "essential": false}
+    ]
   }
 }
 "@ | Set-Content $bodyFile -Encoding UTF8
@@ -106,6 +114,14 @@ $bodyFile = "$env:TEMP\auth-viewer-api-a.json"
         "type": "Admin",
         "value": "access_as_user"
       }
+    ]
+  },
+  "optionalClaims": {
+    "accessToken": [
+      {"name": "xms_tnt_fct", "essential": false},
+      {"name": "xms_sub_fct", "essential": false},
+      {"name": "xms_act_fct", "essential": false},
+      {"name": "xms_par_app_azp", "essential": false}
     ]
   }
 }
@@ -165,7 +181,17 @@ az ad sp create --id $clientAppId 2>$null
 # Enable public client flows (for PKCE without client_secret)
 $bodyFile = "$env:TEMP\auth-viewer-client-public.json"
 @"
-{"isFallbackPublicClient": true}
+{
+  "isFallbackPublicClient": true,
+  "optionalClaims": {
+    "accessToken": [
+      {"name": "xms_tnt_fct", "essential": false},
+      {"name": "xms_sub_fct", "essential": false},
+      {"name": "xms_act_fct", "essential": false},
+      {"name": "xms_par_app_azp", "essential": false}
+    ]
+  }
+}
 "@ | Set-Content $bodyFile -Encoding UTF8
 az rest --method PATCH --url "https://graph.microsoft.com/v1.0/applications/$clientObjectId" --headers "Content-Type=application/json" --body "@$bodyFile"
 Write-Host "Enabled isFallbackPublicClient for PKCE" -ForegroundColor Green

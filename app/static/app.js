@@ -305,6 +305,11 @@ function getScope() {
     return scopeSelect.value;
 }
 
+function getChainTarget() {
+    const opt = scopeSelect.options[scopeSelect.selectedIndex];
+    return opt?.dataset.chain || '';
+}
+
 function updateFlowUI() {
     const isUserAuth = authCategory === 'user_auth';
 
@@ -728,6 +733,7 @@ btnExecute.addEventListener('click', async () => {
     const flowType = getEffectiveFlowType();
     currentFlowType = flowType;
     const scope = getScope();
+    const chainTarget = getChainTarget();
 
     // Close flyout on execute
     closeFlyout();
@@ -756,7 +762,7 @@ btnExecute.addEventListener('click', async () => {
                 const silentData = await silentResp.json();
                 if (!silentData.error && silentData.access_token) {
                     // Success — now execute the flow with the acquired token
-                    const execPayload = { flow_type: flowType, scope: scope };
+                    const execPayload = { flow_type: flowType, scope: scope, chain_target: chainTarget };
                     const execResp = await fetch('/api/execute', {
                         method: 'POST',
                         headers: { 'Content-Type': 'application/json' },
@@ -801,8 +807,9 @@ btnExecute.addEventListener('click', async () => {
 
         // Full redirect through Entra /authorize
         const promptParam = reuseIdCheckbox?.checked ? '' : '&prompt=login';
+        const chainParam = chainTarget ? `&chain_target=${chainTarget}` : '';
         if (isOboScope() || clientType === 'agent') {
-            window.location.href = `/auth/login?flow_type=${flowType}&target_scope=${encodeURIComponent(scope)}${promptParam}`;
+            window.location.href = `/auth/login?flow_type=${flowType}&target_scope=${encodeURIComponent(scope)}${chainParam}${promptParam}`;
         } else {
             window.location.href = `/auth/login?scope=${encodeURIComponent(scope)}${promptParam}`;
         }

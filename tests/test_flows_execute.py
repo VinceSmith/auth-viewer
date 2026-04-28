@@ -438,6 +438,59 @@ class TestExecuteAgentIdOboRouting:
             f"Direct scope should skip API A; got steps: {labels}"
         )
 
+    async def test_chain_target_param_routes_to_chained_path(self, prefill_oidc):
+        """chain_target='api_a' should use chained path even without via_api_a: prefix.
+
+        This is the structural fix: the routing decision is now a dedicated parameter
+        instead of being encoded in the scope string, so scope manipulation can never
+        silently lose the routing signal.
+        """
+        from app.auth.flows import execute_agent_id_obo
+
+        user_token = make_jwt(payload={"sub": "user-1", "scp": "access_as_user", "exp": 9_999_999_999})
+        parent_token = make_jwt(payload={"aud": "api://AzureADTokenExchange", "exp": 9_999_999_999})
+        api_a_token = make_jwt(payload={"aud": f"api://{FAKE_API_A_ID}", "exp": 9_999_999_999})
+        api_b_token = make_jwt(payload={"aud": f"api://{FAKE_API_B_ID}", "exp": 9_999_999_999})
+
+        # 5 calls: parent token, OBO→API A, Call API A, OBO→API B, Call API B
+        ctx1, _ = make_httpx_ctx(make_mock_response(200, {"access_token": parent_token}))
+        ctx2, _ = make_httpx_ctx(make_mock_response(200, {"access_token": api_a_token}))
+        ctx3, _ = make_httpx_ctx(make_mock_response(200, {"user": "api-a-user"}))
+        ctx4, _ = make_httpx_ctx(make_mock_response(200, {"access_token": api_b_token}))
+        ctx5, _ = make_httpx_ctx(make_mock_response(200, {"data": "api-b-data"}))
+
+        with patch("httpx.AsyncClient", side_effect=[ctx1, ctx2, ctx3, ctx4, ctx5]):
+            result = await execute_agent_id_obo(
+                user_token=user_token,
+                scope=f"api://{FAKE_API_B_ID}/.default",  # NO via_api_a: prefix
+                chain_target="api_a",                      # Explicit routing param
+            )
+
+        labels = [s["label"] for s in result["steps"]]
+        assert any("API A" in l and ("Call" in l or "OBO" in l) for l in labels), (
+            f"chain_target='api_a' should route to chained path; got: {labels}"
+        )
+
+    async def test_chain_target_param_propagated_through_api_execute(self, prefill_oidc):
+        """The /api/execute endpoint should pass chain_target to execute_agent_id_obo."""
+        from fastapi.testclient import TestClient
+        from app.main import app
+
+        with TestClient(app) as client:
+            with patch("app.main.flows.execute_agent_id_obo", new_callable=AsyncMock) as mock:
+                mock.return_value = {"steps": [{"label": "Test", "request": {}, "response": {}, "token": None}]}
+                with patch("app.main._run_delegated_flow", new_callable=AsyncMock) as mock_run:
+                    mock_run.return_value = mock.return_value
+                    resp = client.post(
+                        "/api/execute",
+                        json={
+                            "flow_type": "agent_id_obo",
+                            "scope": f"api://{FAKE_API_B_ID}/.default",
+                            "chain_target": "api_a",
+                        },
+                    )
+            assert resp.status_code == 200
+
 
 # ────────────────────────────────────────────────────────────────
 # diagram_index — every step carries a rect index for the sequence diagram

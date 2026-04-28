@@ -961,7 +961,7 @@ async def execute_agent_id_autonomous_chain(*, scope: str) -> dict:
 # 8. Agent ID — OBO (delegated)
 # ---------------------------------------------------------------------------
 
-async def execute_agent_id_obo(*, user_token: str, scope: str) -> dict:
+async def execute_agent_id_obo(*, user_token: str, scope: str, chain_target: str = "") -> dict:
     """Agent ID OBO flow — direct or chained depending on target scope.
 
     Direct (target is NOT API A):
@@ -969,12 +969,17 @@ async def execute_agent_id_obo(*, user_token: str, scope: str) -> dict:
       Step 2: jwt-bearer OBO exchange → agent token scoped to target resource
       Step 3: Call target resource
 
-    Chained (target is API A, or explicit chain through API A → downstream):
+    Chained (chain_target='api_a', or explicit via_api_a: prefix, or API A scope):
       Step 1: client_credentials + fmi_path → parent token (Blueprint)
       Step 2: jwt-bearer OBO exchange → agent token scoped to API A
       Step 3: Call API A with agent token
       Step 4: API A OBO exchange → token scoped to downstream (API B / Graph)
       Step 5: Call downstream resource
+
+    The chain_target parameter is the primary routing mechanism — it decouples
+    the routing decision from the scope string so scope manipulation can never
+    silently break the chain path. The via_api_a: prefix is kept as backward
+    compat only.
     """
     # Ensure OIDC discovery is cached for endpoint resolution
     _, fetched = await _ensure_oidc_discovery()
@@ -996,27 +1001,20 @@ async def execute_agent_id_obo(*, user_token: str, scope: str) -> dict:
             ],
         }
 
-    # A `via_api_a:` prefix means the UI explicitly selected a chain-through-API-A
-    # target (e.g. "API A → API B (OBO)").  Strip the prefix and extract the real
-    # downstream scope before routing.
+    # ── Chain routing (3 checks in priority order) ──
+    # 1. Explicit chain_target parameter (structural fix — preferred)
+    # 2. Legacy via_api_a: prefix in scope string (backward compat)
+    # 3. Scope targets API A directly (implicit chain)
     chain_prefix = "via_api_a:"
-    if scope.startswith(chain_prefix):
-        downstream_scope = scope[len(chain_prefix):]
-        return await _agent_id_obo_chain(
-            user_token=user_token, scope=downstream_scope,
-            parent_token=parent_token, parent_step=parent_step,
-            step1_result=step1_result, steps_prefix=steps_prefix,
-        )
-
-    # Fallback: detect chained path by checking whether API A's app ID appears in the
-    # scope string (e.g. when the scope itself is the API A scope).
+    has_prefix = scope.startswith(chain_prefix)
     api_a_scope_id = settings.api_a_app_id or ""
     targets_api_a = api_a_scope_id and api_a_scope_id in scope
 
-    if targets_api_a:
-        # ── Chained path: Agent → API A (→ optionally downstream) ──
+    if chain_target == "api_a" or has_prefix or targets_api_a:
+        # Strip the via_api_a: prefix if present; otherwise use scope as-is
+        downstream_scope = scope[len(chain_prefix):] if has_prefix else scope
         return await _agent_id_obo_chain(
-            user_token=user_token, scope=scope,
+            user_token=user_token, scope=downstream_scope,
             parent_token=parent_token, parent_step=parent_step,
             step1_result=step1_result, steps_prefix=steps_prefix,
         )

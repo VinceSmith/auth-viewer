@@ -98,6 +98,14 @@ $bodyFile = "$env:TEMP\auth-viewer-bp-scope.json"
       "appId": "$ClientId",
       "delegatedPermissionIds": ["$bpScopeId"]
     }]
+  },
+  "optionalClaims": {
+    "accessToken": [
+      {"name": "xms_tnt_fct", "essential": false},
+      {"name": "xms_sub_fct", "essential": false},
+      {"name": "xms_act_fct", "essential": false},
+      {"name": "xms_par_app_azp", "essential": false}
+    ]
   }
 }
 "@ | Set-Content $bodyFile -Encoding UTF8

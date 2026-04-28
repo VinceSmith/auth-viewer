@@ -170,10 +170,8 @@
                     <option value="openid profile {{ settings.api_a_scope }}" data-ctx="user_auth app agent">API A</option>
                     <option value="openid profile {{ settings.api_b_scope }}" data-ctx="user_auth app agent">API B</option>
                     <option value="https://graph.microsoft.com/.default" data-ctx="user_auth app agent">Microsoft Graph</option>
-                    <option value="{{ settings.api_b_app_uri }}/.default" data-ctx="user_auth app" data-obo="1">API A &rarr; API B (OBO)</option>
-                    <option value="via_api_a:{{ settings.api_b_app_uri }}/.default" data-ctx="user_auth agent" data-obo="1">API A &rarr; API B (OBO)</option>
-                    <option value="https://graph.microsoft.com/.default" data-ctx="user_auth app" data-obo="1">API A &rarr; Graph (OBO)</option>
-                    <option value="via_api_a:https://graph.microsoft.com/.default" data-ctx="user_auth agent" data-obo="1">API A &rarr; Graph (OBO)</option>
+                    <option value="{{ settings.api_b_app_uri }}/.default" data-ctx="user_auth app agent" data-obo="1" data-chain="api_a">API A &rarr; API B (OBO)</option>
+                    <option value="https://graph.microsoft.com/.default" data-ctx="user_auth app agent" data-obo="1" data-chain="api_a">API A &rarr; Graph (OBO)</option>
                     <option value="{{ settings.api_a_app_uri }}/.default" data-ctx="client_credentials app agent">API A</option>
                     <option value="https://graph.microsoft.com/.default" data-ctx="client_credentials app agent">Microsoft Graph</option>
                     <option value="chain:{{ settings.api_b_app_uri }}/.default" data-ctx="client_credentials app agent">API A &rarr; API B (chain)</option>
