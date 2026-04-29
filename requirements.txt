@@ -6,6 +6,7 @@ httpx
 python-jose[cryptography]
 pydantic-settings
 azure-identity
+aiohttp
 itsdangerous
 pytest
 pytest-asyncio
