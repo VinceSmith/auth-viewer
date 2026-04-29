@@ -7,10 +7,20 @@ import urllib.parse
 import httpx
 
 from app.config import settings
+from app.auth import credential as _cred
 from app.auth.token_utils import format_token_response, decode_jwt
 from app.auth.types import StepDict, TokenResponse
 
 _logger = logging.getLogger(__name__)
+
+
+async def _assertion_params(client_id: str) -> dict:
+    """Build client_assertion parameters for a token request."""
+    assertion = await _cred.get_client_assertion()
+    return {
+        "client_assertion_type": "urn:ietf:params:oauth:client-assertion-type:jwt-bearer",
+        "client_assertion": assertion,
+    }
 
 
 # ---------------------------------------------------------------------------
@@ -250,16 +260,16 @@ async def _call_resource(*, access_token: str, scope: str) -> dict:
 
 
 async def _obo_token_exchange(*, assertion: str, scope: str,
-                               obo_client_id: str | None = None,
-                               obo_client_secret: str | None = None) -> dict:
+                               obo_client_id: str | None = None) -> dict:
     """Standard OBO token exchange — present an assertion to get a downstream token.
 
     Both SP OBO and Agent ID OBO use the same exchange: API A authenticates
     with its own credentials and presents the caller's token as an assertion.
     """
+    client_id = obo_client_id or settings.api_a_app_id
     params = {
-        "client_id": obo_client_id or settings.api_a_app_id,
-        "client_secret": obo_client_secret or settings.api_a_client_secret,
+        "client_id": client_id,
+        **(await _assertion_params(client_id)),
         "grant_type": "urn:ietf:params:oauth:grant-type:jwt-bearer",
         "assertion": assertion,
         "requested_token_use": "on_behalf_of",
@@ -423,7 +433,7 @@ async def _acquire_parent_token() -> tuple[dict, dict]:
     """
     params = {
         "client_id": settings.agent_blueprint_app_id,
-        "client_secret": settings.agent_blueprint_secret,
+        **(await _assertion_params(settings.agent_blueprint_app_id)),
         "grant_type": "client_credentials",
         "scope": "api://AzureADTokenExchange/.default",
         "fmi_path": settings.agent_identity_id,
@@ -630,7 +640,7 @@ async def exchange_auth_code(
         "code": code,
         "redirect_uri": settings.redirect_uri,
         "scope": scope,
-        "client_secret": settings.client_secret,
+        **(await _assertion_params(settings.client_id)),
     }
 
     result = await _post_token_endpoint(_token_endpoint(), params)
@@ -661,7 +671,7 @@ async def execute_client_credentials(*, scope: str) -> dict:
     coercion_note = _scope_coercion_note(scope)
     params = {
         "client_id": settings.client_id,
-        "client_secret": settings.client_secret,
+        **(await _assertion_params(settings.client_id)),
         "grant_type": "client_credentials",
         "scope": _coerce_default_scope(scope),
     }
@@ -704,7 +714,7 @@ async def execute_client_credentials_chain(*, scope: str) -> dict:
     cc_coercion_note = _scope_coercion_note(f"api://{settings.api_a_app_id}/.default")
     params = {
         "client_id": settings.client_id,
-        "client_secret": settings.client_secret,
+        **(await _assertion_params(settings.client_id)),
         "grant_type": "client_credentials",
         "scope": _coerce_default_scope(f"api://{settings.api_a_app_id}/.default"),
     }
@@ -756,7 +766,7 @@ async def execute_client_credentials_chain(*, scope: str) -> dict:
 
 async def execute_obo(
     *, user_access_token: str, scope: str,
-    obo_client_id: str | None = None, obo_client_secret: str | None = None,
+    obo_client_id: str | None = None,
 ) -> dict:
     """Exchange a user token for a downstream token via OBO, then call downstream API."""
     _, fetched = await _ensure_oidc_discovery()
@@ -771,7 +781,7 @@ async def execute_obo(
     # ── Step 2: OBO token exchange ──
     result = await _obo_token_exchange(
         assertion=user_access_token, scope=scope,
-        obo_client_id=obo_client_id, obo_client_secret=obo_client_secret,
+        obo_client_id=obo_client_id,
     )
 
     obo_body = result.get("response", {}).get("body", {})
@@ -810,7 +820,7 @@ async def silent_acquire(*, refresh_token: str, scope: str) -> dict:
     await _ensure_oidc_discovery()
     params = {
         "client_id": settings.client_id,
-        "client_secret": settings.client_secret,
+        **(await _assertion_params(settings.client_id)),
         "grant_type": "refresh_token",
         "refresh_token": refresh_token,
         "scope": scope,
@@ -1180,7 +1190,7 @@ async def _get_graph_cc_token() -> str:
     # here to avoid consuming the first-fetch flag before a user-facing flow runs.
     result = await _post_token_endpoint(_token_endpoint(), {
         "client_id": settings.client_id,
-        "client_secret": settings.client_secret,
+        **(await _assertion_params(settings.client_id)),
         "scope": "https://graph.microsoft.com/.default",
         "grant_type": "client_credentials",
     })

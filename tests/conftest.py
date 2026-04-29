@@ -44,16 +44,13 @@ def patch_settings(monkeypatch):
     fake = MagicMock()
     fake.tenant_id = FAKE_TENANT
     fake.client_id = FAKE_CLIENT_ID
-    fake.client_secret = "test-client-secret"
     fake.api_a_app_id = FAKE_API_A_ID
-    fake.api_a_client_secret = "api-a-secret"
     fake.api_a_scope = f"api://{FAKE_API_A_ID}/access_as_user"
     fake.api_a_base_url = "http://localhost:8001"
     fake.api_b_app_id = FAKE_API_B_ID
     fake.api_b_scope = f"api://{FAKE_API_B_ID}/read"
     fake.api_b_base_url = "http://localhost:8002"
     fake.agent_blueprint_app_id = FAKE_BLUEPRINT_ID
-    fake.agent_blueprint_secret = "blueprint-secret"
     fake.agent_identity_id = FAKE_AGENT_ID
     fake.agent_identity_tenant_id = FAKE_TENANT
     fake.redirect_uri = "http://localhost:8000/auth/callback"
@@ -63,6 +60,20 @@ def patch_settings(monkeypatch):
     )
     monkeypatch.setattr(flows, "settings", fake)
     return fake
+
+
+@pytest.fixture(autouse=True)
+def mock_credential(request, monkeypatch):
+    """Mock get_client_assertion so tests never hit Azure.
+
+    Tests in test_credential.py manage their own mocks, so skip this fixture
+    when the test module is test_credential.
+    """
+    if request.module.__name__ == "tests.test_credential":
+        return
+    from app.auth import credential as cred_mod
+    from unittest.mock import AsyncMock
+    monkeypatch.setattr(cred_mod, "get_client_assertion", AsyncMock(return_value="fake-assertion"))
 
 
 @pytest.fixture(autouse=True)
