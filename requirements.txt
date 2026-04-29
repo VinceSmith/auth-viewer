@@ -5,6 +5,7 @@ python-dotenv
 httpx
 python-jose[cryptography]
 pydantic-settings
+azure-identity
 itsdangerous
 pytest
 pytest-asyncio
