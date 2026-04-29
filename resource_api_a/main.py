@@ -15,11 +15,11 @@ import httpx
 from fastapi import FastAPI, Header
 
 from resource_apis.auth_utils import validate_token, extract_bearer
+from app.auth.credential import get_client_assertion
 
 app = FastAPI(title="Auth Viewer — API A")
 
 API_A_APP_ID = os.getenv("API_A_APP_ID", "")
-API_A_CLIENT_SECRET = os.getenv("API_A_CLIENT_SECRET", "")
 API_B_SCOPE = os.getenv("API_B_SCOPE", "")
 API_B_BASE_URL = os.getenv("API_B_BASE_URL", "http://localhost:8002")
 TENANT_ID = os.getenv("TENANT_ID", "")
@@ -52,9 +52,11 @@ async def obo_chain(authorization: str = Header("")):
     claims = await _validate(token)
 
     token_endpoint = f"https://login.microsoftonline.com/{TENANT_ID}/oauth2/v2.0/token"
+    assertion_jwt = await get_client_assertion()
     obo_params = {
         "client_id": API_A_APP_ID,
-        "client_secret": API_A_CLIENT_SECRET,
+        "client_assertion_type": "urn:ietf:params:oauth:client-assertion-type:jwt-bearer",
+        "client_assertion": assertion_jwt,
         "grant_type": "urn:ietf:params:oauth:grant-type:jwt-bearer",
         "assertion": token,
         "requested_token_use": "on_behalf_of",
@@ -72,7 +74,7 @@ async def obo_chain(authorization: str = Header("")):
     if "access_token" not in obo_result:
         return {
             "error": "OBO exchange failed",
-            "obo_request": {k: v for k, v in obo_params.items() if k != "client_secret"},
+            "obo_request": {k: v for k, v in obo_params.items() if k != "client_assertion"},
             "obo_response": obo_result,
         }
 
@@ -103,9 +105,11 @@ async def cc_chain(authorization: str = Header(""), target_scope: str = "", targ
     downstream_url = target_url or f"{API_B_BASE_URL}/data"
 
     token_endpoint = f"https://login.microsoftonline.com/{TENANT_ID}/oauth2/v2.0/token"
+    assertion_jwt = await get_client_assertion()
     cc_params = {
         "client_id": API_A_APP_ID,
-        "client_secret": API_A_CLIENT_SECRET,
+        "client_assertion_type": "urn:ietf:params:oauth:client-assertion-type:jwt-bearer",
+        "client_assertion": assertion_jwt,
         "grant_type": "client_credentials",
         "scope": downstream_scope,
     }
@@ -121,7 +125,7 @@ async def cc_chain(authorization: str = Header(""), target_scope: str = "", targ
     if "access_token" not in cc_result:
         return {
             "error": "Client credentials grant for downstream failed",
-            "cc_request": {k: v for k, v in cc_params.items() if k != "client_secret"},
+            "cc_request": {k: v for k, v in cc_params.items() if k != "client_assertion"},
             "cc_response": cc_result,
         }
 
@@ -139,7 +143,7 @@ async def cc_chain(authorization: str = Header(""), target_scope: str = "", targ
     return {
         "message": "Hello from API A",
         "original_claims": claims,
-        "cc_request": {k: v for k, v in cc_params.items() if k != "client_secret"},
+        "cc_request": {k: v for k, v in cc_params.items() if k != "client_assertion"},
         "cc_token_response": cc_result,
         "downstream_url": downstream_url,
         "downstream_response": downstream_result,

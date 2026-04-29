@@ -14,9 +14,14 @@ from app.config import settings
 from app.diagrams import get_diagram, DIAGRAMS, STEP_FILLS
 from app.auth import flows
 from app.auth.token_utils import decode_jwt
+from app.auth.credential import close_credential
 
 app = FastAPI(title="Entra OAuth Explorer")
 app.add_middleware(SessionMiddleware, secret_key=settings.session_secret)
+
+@app.on_event("shutdown")
+async def shutdown_event():
+    await close_credential()
 app.mount("/static", StaticFiles(directory="app/static"), name="static")
 templates = Jinja2Templates(directory="app/templates")
 
