@@ -118,9 +118,8 @@ Write-Host "Blueprint scope: api://$bpAppId/access_as_user" -ForegroundColor Gre
 # Create service principal for Blueprint
 az ad sp create --id $bpAppId 2>$null
 
-# Create client secret for Blueprint
-$bpSecret = (az ad app credential reset --id $bpObjectId --display-name "auth-viewer-bp-secret" --query password -o tsv)
-Write-Host "Blueprint client secret created" -ForegroundColor Green
+# NOTE: No client secret — Blueprint uses Federated Identity Credentials (FIC).
+# Run scripts/setup_fic.ps1 after deploying Container Apps to configure FICs.
 
 
 # ══════════════════════════════════════════════════════════════════
@@ -260,8 +259,6 @@ $newLines = @()
 foreach ($line in $lines) {
     if ($line -match '^AGENT_BLUEPRINT_APP_ID=') {
         $newLines += "AGENT_BLUEPRINT_APP_ID=$bpAppId"
-    } elseif ($line -match '^AGENT_BLUEPRINT_SECRET=') {
-        $newLines += "AGENT_BLUEPRINT_SECRET=$bpSecret"
     } elseif ($line -match '^AGENT_IDENTITY_ID=') {
         $newLines += "AGENT_IDENTITY_ID=$agentAppId"
     } elseif ($line -match '^AGENT_IDENTITY_TENANT_ID=') {
