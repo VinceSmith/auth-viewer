@@ -20,6 +20,7 @@ from app.auth.credential import get_client_assertion
 app = FastAPI(title="Auth Viewer — API A")
 
 API_A_APP_ID = os.getenv("API_A_APP_ID", "")
+API_A_CLIENT_SECRET = os.getenv("API_A_CLIENT_SECRET", "")
 API_B_SCOPE = os.getenv("API_B_SCOPE", "")
 API_B_BASE_URL = os.getenv("API_B_BASE_URL", "http://localhost:8002")
 TENANT_ID = os.getenv("TENANT_ID", "")
@@ -37,6 +38,25 @@ async def _validate(token: str) -> dict:
     )
 
 
+async def _api_a_client_auth_params() -> dict:
+    if API_A_CLIENT_SECRET:
+        return {"client_secret": API_A_CLIENT_SECRET}
+
+    assertion_jwt = await get_client_assertion()
+    return {
+        "client_assertion_type": "urn:ietf:params:oauth:client-assertion-type:jwt-bearer",
+        "client_assertion": assertion_jwt,
+    }
+
+
+def _display_token_request(params: dict) -> dict:
+    display = dict(params)
+    display.pop("client_assertion", None)
+    if "client_secret" in display:
+        display["client_secret"] = "[client_secret]"
+    return display
+
+
 @app.get("/me")
 async def get_me(authorization: str = Header("")):
     """Return the token claims — demonstrates a simple protected endpoint."""
@@ -52,11 +72,9 @@ async def obo_chain(authorization: str = Header("")):
     claims = await _validate(token)
 
     token_endpoint = f"https://login.microsoftonline.com/{TENANT_ID}/oauth2/v2.0/token"
-    assertion_jwt = await get_client_assertion()
     obo_params = {
         "client_id": API_A_APP_ID,
-        "client_assertion_type": "urn:ietf:params:oauth:client-assertion-type:jwt-bearer",
-        "client_assertion": assertion_jwt,
+        **(await _api_a_client_auth_params()),
         "grant_type": "urn:ietf:params:oauth:grant-type:jwt-bearer",
         "assertion": token,
         "requested_token_use": "on_behalf_of",
@@ -74,7 +92,7 @@ async def obo_chain(authorization: str = Header("")):
     if "access_token" not in obo_result:
         return {
             "error": "OBO exchange failed",
-            "obo_request": {k: v for k, v in obo_params.items() if k != "client_assertion"},
+            "obo_request": _display_token_request(obo_params),
             "obo_response": obo_result,
         }
 
@@ -89,7 +107,7 @@ async def obo_chain(authorization: str = Header("")):
     return {
         "message": "OBO chain complete",
         "original_claims": claims,
-        "obo_request": {k: v for k, v in obo_params.items() if k != "client_secret"},
+        "obo_request": _display_token_request(obo_params),
         "obo_token_response": {k: v for k, v in obo_result.items() if k != "access_token"},
         "api_b_response": api_b_result,
     }
@@ -105,11 +123,9 @@ async def cc_chain(authorization: str = Header(""), target_scope: str = "", targ
     downstream_url = target_url or f"{API_B_BASE_URL}/data"
 
     token_endpoint = f"https://login.microsoftonline.com/{TENANT_ID}/oauth2/v2.0/token"
-    assertion_jwt = await get_client_assertion()
     cc_params = {
         "client_id": API_A_APP_ID,
-        "client_assertion_type": "urn:ietf:params:oauth:client-assertion-type:jwt-bearer",
-        "client_assertion": assertion_jwt,
+        **(await _api_a_client_auth_params()),
         "grant_type": "client_credentials",
         "scope": downstream_scope,
     }
@@ -125,7 +141,7 @@ async def cc_chain(authorization: str = Header(""), target_scope: str = "", targ
     if "access_token" not in cc_result:
         return {
             "error": "Client credentials grant for downstream failed",
-            "cc_request": {k: v for k, v in cc_params.items() if k != "client_assertion"},
+            "cc_request": _display_token_request(cc_params),
             "cc_response": cc_result,
         }
 
@@ -143,7 +159,7 @@ async def cc_chain(authorization: str = Header(""), target_scope: str = "", targ
     return {
         "message": "Hello from API A",
         "original_claims": claims,
-        "cc_request": {k: v for k, v in cc_params.items() if k != "client_assertion"},
+        "cc_request": _display_token_request(cc_params),
         "cc_token_response": cc_result,
         "downstream_url": downstream_url,
         "downstream_response": downstream_result,
