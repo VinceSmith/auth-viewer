@@ -107,9 +107,13 @@ class TestCoerceDefaultScope:
         result = _coerce_default_scope("openid profile api://my-app/access_as_user")
         assert result == "api://my-app/.default"
 
-    def test_fallback_appends_default_suffix(self):
-        result = _coerce_default_scope("some-generic-scope")
-        assert result.endswith("/.default")
+    def test_generic_scope_without_resource_uri_raises(self):
+        with pytest.raises(ValueError, match="Unknown target resource"):
+            _coerce_default_scope("some-generic-scope")
+
+    def test_empty_scope_raises(self):
+        with pytest.raises(ValueError, match="Unknown target resource"):
+            _coerce_default_scope("")
 
     def test_idempotent_on_already_default(self):
         scope = "api://abc-def/.default"

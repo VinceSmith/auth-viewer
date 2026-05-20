@@ -13,6 +13,7 @@ from starlette.middleware.sessions import SessionMiddleware
 from app.config import settings
 from app.diagrams import get_diagram, DIAGRAMS, STEP_FILLS
 from app.auth import flows
+from app.auth import simulation
 from app.auth.token_utils import decode_jwt
 from app.auth.credential import close_credential
 
@@ -28,13 +29,53 @@ templates = Jinja2Templates(directory="app/templates")
 import json as _json
 _STEP_FILLS_JSON = _json.dumps(STEP_FILLS)
 
-def _base_ctx() -> dict:
+
+def _settings_simulation_enabled() -> bool:
+    value = getattr(settings, "simulation_mode", False)
+    if isinstance(value, str):
+        return value.strip().lower() in ("1", "true", "yes", "on")
+    return value is True
+
+
+def _live_session_available(request: Request) -> bool:
+    sid = request.session.get("sid", "")
+    if not sid:
+        return False
+    stored = _token_store.get(sid, {})
+    return bool(stored.get("user_profile") or stored.get("id_token_raw"))
+
+
+def _simulation_enabled(request: Request | None = None) -> bool:
+    if request is not None and request.session.get("simulation_demo_override") is True:
+        return True
+    if request is not None and _live_session_available(request):
+        return False
+    if request is not None and "simulation_mode" in request.session:
+        return request.session.get("simulation_mode") is True
+    return _settings_simulation_enabled()
+
+
+def _app_config_json(request: Request | None = None) -> str:
+    return _json.dumps({"simulation_mode": _simulation_enabled(request)})
+
+
+def _diagram_key_for(flow_type: str, scope: str = "", chain_target: str = "") -> str:
+    if flow_type == "agent_id_obo" and (chain_target == "api_a" or scope.startswith("via_api_a:")):
+        return "agent_id_obo_chain"
+    if flow_type in ("client_credentials_chain", "agent_id_autonomous_chain") and "graph.microsoft.com" in scope:
+        return f"{flow_type}_graph"
+    return flow_type
+
+def _base_ctx(request: Request | None = None) -> dict:
     """Common template context shared by every page render."""
+    simulation_mode = _simulation_enabled(request)
     return {
         "settings": settings,
+        "simulation_mode": simulation_mode,
         "flow_types": list(DIAGRAMS.keys()),
         "cache_bust": int(_time.time()),
         "step_fills_json": _STEP_FILLS_JSON,
+        "app_config_json": _app_config_json(request),
     }
 
 
@@ -474,12 +515,32 @@ def _extract_subjects(result: dict) -> None:
 
 @app.get("/", response_class=HTMLResponse)
 async def index(request: Request):
+    if "simulation_mode" not in request.session:
+        request.session["simulation_mode"] = True
+
+    if _simulation_enabled(request):
+        return templates.TemplateResponse(request, "index.html", _base_ctx(request))
+
     # Require sign-in: redirect to get ID token if no profile yet
     sid = request.session.get("sid", "")
     stored = _token_store.get(sid, {})
     if not stored.get("user_profile"):
         return RedirectResponse("/auth/login?scope=openid+profile+offline_access", status_code=302)
-    return templates.TemplateResponse(request, "index.html", _base_ctx())
+    return templates.TemplateResponse(request, "index.html", _base_ctx(request))
+
+
+@app.get("/mode/simulated")
+async def mode_simulated(request: Request):
+    """Switch this browser session to simulated mode."""
+    request.session["simulation_mode"] = True
+    request.session["simulation_demo_override"] = True
+    return RedirectResponse("/", status_code=302)
+
+
+@app.get("/mode/live")
+async def mode_live(request: Request):
+    """Start live Entra authentication for this browser session."""
+    return RedirectResponse("/auth/login?scope=openid+profile+offline_access", status_code=302)
 
 
 # ---------------------------------------------------------------------------
@@ -506,6 +567,11 @@ async def auth_login(
     prompt: str = "", chain_target: str = "",
 ):
     """Start an authorization code flow by redirecting the user to Entra."""
+    if flow_type and flow_type not in ("auth_code", "obo", "agent_id_obo"):
+        return JSONResponse({"error": f"Unknown flow type: {flow_type}"}, status_code=400)
+
+    request.session["simulation_mode"] = False
+    request.session.pop("simulation_demo_override", None)
     state = secrets.token_urlsafe(32)
     request.session["oauth_state"] = state
 
@@ -580,7 +646,7 @@ async def auth_callback(request: Request, code: str = "", state: str = "", error
             "ts": _time.time(),
         }
         return templates.TemplateResponse(request, "index.html", {
-            **_base_ctx(),
+            **_base_ctx(request),
             "error": f"{error}: {error_description}",
         })
 
@@ -603,7 +669,7 @@ async def auth_callback(request: Request, code: str = "", state: str = "", error
             pending = mem  # pure in-memory fallback
         if not pending:
             return templates.TemplateResponse(request, "index.html", {
-                **_base_ctx(),
+                **_base_ctx(request),
                 "error": f"State mismatch: expected {expected_state!r}, got {state!r}. "
                           "This usually means another sign-in was started (second tab, "
                           "double-click) before this one completed.",
@@ -628,20 +694,32 @@ async def auth_callback(request: Request, code: str = "", state: str = "", error
             request.session["authorize_step_id"] = pending["authorize_step_id"]
 
     # Exchange code for tokens
-    scope = request.session.get("oauth_scope", "openid profile")
+    scope = request.session.get("oauth_scope")
+    if not scope:
+        return templates.TemplateResponse(request, "index.html", {
+            **_base_ctx(request),
+            "error": "Missing OAuth scope in callback session. Start sign-in again.",
+        }, status_code=400)
     result = await flows.exchange_auth_code(
         code=code, scope=scope,
     )
 
-    flow_type = request.session.get("flow_type", "auth_code")
+    flow_type = request.session.get("flow_type")
+    if flow_type not in ("auth_code", "obo", "agent_id_obo"):
+        return templates.TemplateResponse(request, "index.html", {
+            **_base_ctx(request),
+            "error": f"Unknown flow type in callback session: {flow_type!r}. Start sign-in again.",
+        }, status_code=400)
 
     # Store tokens server-side for later use (refresh, OBO)
     resp_body = result.get("response", {}).get("body", {})
     if "error" in resp_body:
         return templates.TemplateResponse(request, "index.html", {
-            **_base_ctx(),
+            **_base_ctx(request),
             "error": f"{resp_body['error']}: {resp_body.get('error_description', '')}",
         })
+    request.session["simulation_mode"] = False
+    request.session.pop("simulation_demo_override", None)
     session_id = request.session.get("sid") or secrets.token_urlsafe(16)
     request.session["sid"] = session_id
     if session_id not in _token_store:
@@ -824,6 +902,18 @@ async def api_execute(request: Request, body: ExecuteRequest):
     scope = body.scope
 
     try:
+        if _simulation_enabled(request):
+            try:
+                result = simulation.execute(
+                    flow_type=flow_type,
+                    scope=scope,
+                    chain_target=body.chain_target,
+                )
+            except ValueError as e:
+                return JSONResponse({"error": str(e)}, status_code=400)
+            diagram = get_diagram(_diagram_key_for(flow_type, scope, body.chain_target))
+            return JSONResponse({"result": result, "diagram": diagram})
+
         sid = request.session.get("sid", "")
         stored = _token_store.get(sid, {})
 
@@ -870,6 +960,8 @@ async def api_execute(request: Request, body: ExecuteRequest):
 
     except _FlowError as fe:
         return JSONResponse(fe.body, status_code=fe.status_code)
+    except ValueError as e:
+        return JSONResponse({"error": str(e)}, status_code=400)
     except Exception as e:
         return JSONResponse({"error": str(e)}, status_code=500)
 
@@ -884,8 +976,14 @@ async def api_execute(request: Request, body: ExecuteRequest):
 
 
 @app.get("/api/signin-logs")
-async def api_signin_logs(after: str = ""):
+async def api_signin_logs(request: Request, after: str = ""):
     """Fetch recent sign-in logs from Microsoft Graph for our app."""
+    if _simulation_enabled(request):
+        return JSONResponse({
+            "entries": simulation.signin_logs(after=after),
+            "simulation_mode": True,
+        })
+
     try:
         entries = await flows.fetch_signin_logs(after=after)
         return JSONResponse({"entries": entries})
@@ -902,6 +1000,9 @@ async def api_silent_acquire(request: Request, body: SilentAcquireRequest):
     """
     scope = body.scope
     flow_type = body.flow_type
+
+    if _simulation_enabled(request):
+        return JSONResponse(simulation.silent_acquire(scope=scope, flow_type=flow_type))
 
     sid = request.session.get("sid", "")
     stored = _token_store.get(sid, {})
@@ -947,8 +1048,11 @@ async def api_silent_acquire(request: Request, body: SilentAcquireRequest):
 
 
 @app.get("/api/highlights")
-async def api_highlights():
+async def api_highlights(request: Request):
     """Return a map of known IDs/subs → human-readable labels."""
+    if _simulation_enabled(request):
+        return JSONResponse(simulation.highlights())
+
     highlights = {}
     mapping = [
         (settings.client_id, "Client App"),
@@ -971,12 +1075,18 @@ async def api_highlights():
 @app.get("/api/diagram/{flow_type}")
 async def api_diagram(flow_type: str):
     """Return the Mermaid diagram for a flow type."""
-    return JSONResponse({"diagram": get_diagram(flow_type)})
+    try:
+        return JSONResponse({"diagram": get_diagram(flow_type)})
+    except ValueError as e:
+        return JSONResponse({"error": str(e)}, status_code=404)
 
 
 @app.get("/api/session")
 async def api_session(request: Request):
     """Return current session token state (for UI)."""
+    if _simulation_enabled(request):
+        return JSONResponse(simulation.session_status())
+
     sid = request.session.get("sid", "")
     stored = _token_store.get(sid, {})
     obo_tokens = stored.get("obo") or stored.get("auth_code") or {}
@@ -996,12 +1106,16 @@ async def api_session(request: Request):
         "has_refresh_token": bool(any_rt),
         "token_expired": _is_token_expired(any_at) if any_at else False,
         "last_flow": request.session.get("last_flow"),
+        "simulation_mode": False,
     })
 
 
 @app.get("/api/me")
 async def api_me(request: Request):
     """Return the signed-in user's profile and decoded ID token."""
+    if _simulation_enabled(request):
+        return JSONResponse(simulation.me())
+
     sid = request.session.get("sid", "")
     stored = _token_store.get(sid, {})
     profile = stored.get("user_profile")
@@ -1021,10 +1135,16 @@ async def api_last_result(request: Request):
     result_id = request.session.pop("result_id", None)
     if result_id and result_id in _result_store:
         stored = _result_store.pop(result_id)
-        flow = stored.get("flow_type", "auth_code")
+        flow = stored.get("flow_type")
+        if not flow:
+            return JSONResponse({"error": "Stored result is missing flow_type"}, status_code=500)
+        try:
+            diagram = get_diagram(flow)
+        except ValueError as e:
+            return JSONResponse({"error": str(e)}, status_code=500)
         return JSONResponse({
             "result": stored["result"],
-            "diagram": get_diagram(flow),
+            "diagram": diagram,
             "flow_type": flow,
         })
     return JSONResponse({"result": None})

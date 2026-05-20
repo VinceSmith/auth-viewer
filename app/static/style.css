@@ -62,6 +62,36 @@ body {
 
 .top-bar-spacer { flex: 1; }
 
+.mode-switch {
+    display: flex;
+    align-items: center;
+    border: 1px solid var(--border);
+    border-radius: var(--radius);
+    overflow: hidden;
+    flex-shrink: 0;
+}
+
+.mode-option {
+    color: var(--text-muted);
+    text-decoration: none;
+    font-size: 0.72rem;
+    font-weight: 600;
+    line-height: 1;
+    padding: 7px 10px;
+    border-right: 1px solid var(--border);
+}
+
+.mode-option:last-child { border-right: 0; }
+
+.mode-option:hover { background: rgba(255, 255, 255, 0.06); }
+
+.mode-option.mode-action { color: var(--text-primary); }
+
+.mode-option.active {
+    background: var(--accent);
+    color: #050914;
+}
+
 .flyout-toggle {
     background: none;
     border: 1px solid var(--border);
@@ -804,6 +834,13 @@ select:focus, input:focus {
 .status-none { background: var(--border); color: var(--text-muted); }
 .status-has { background: #1b5e20; color: var(--success); }
 .status-expired { background: #5e3b00; color: #ffa726; }
+.status-sim { background: #214d57; color: #7ee6f2; }
+
+.status-hint {
+    color: var(--text-muted);
+    font-size: 0.68rem;
+    align-self: center;
+}
 
 
 /* ══════════════════════════════════════════════════════════════════════════ */
@@ -933,6 +970,10 @@ select:focus, input:focus {
 .signin-log-source.graph {
     background: rgba(200, 200, 200, 0.1);
     color: var(--text-muted);
+}
+.signin-log-source.simulated {
+    background: rgba(126, 230, 242, 0.15);
+    color: #7ee6f2;
 }
 .signin-log-step-label {
     font-size: 0.68rem;

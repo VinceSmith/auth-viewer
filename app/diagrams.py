@@ -272,7 +272,6 @@ DIAGRAMS = {
     participant C as Client App
     participant A as API A<br/>(middle tier)
     participant E as Entra ID
-    participant B as API B<br/>(downstream)
 
     Note over C: Agent ID — OBO (delegated)
     rect {_S0}
@@ -304,16 +303,56 @@ DIAGRAMS = {
     Note right of C: Step 5 — Call API A
     C->>A: GET /me<br/>Authorization: Bearer {{agent_token_A}}
     A->>C: {{ claims }}
+    end""",
+
+    "agent_id_obo_chain": f"""sequenceDiagram
+    participant U as User / Browser
+    participant C as Client App
+    participant A as API A<br/>(middle tier)
+    participant E as Entra ID
+    participant B as API B<br/>(downstream)
+
+    Note over C: Agent ID — OBO delegated chain
+    rect {_S0}
+    Note right of C: Step 1 — Authorize
+    U->>C: Click "Execute Agent ID OBO"
+    C->>U: Redirect to /authorize<br/>(scope = Blueprint API)
+    U->>E: GET /authorize
+    E->>U: Login + consent
+    U->>E: Credentials
+    E->>U: Redirect with code
+    U->>C: GET /callback?code=...
+    end
+    rect {_S1}
+    Note right of C: Step 2 — Token Exchange
+    C->>E: POST /token<br/>(grant_type=authorization_code,<br/>code, client_secret,<br/>scope=api://blueprint/access_as_user)
+    E->>C: {{ user_token }}<br/>(aud: api://blueprint)
+    end
+    rect {_S2}
+    Note right of C: Step 3 — Parent Token
+    C->>E: POST /token<br/>(grant_type=client_credentials,<br/>client_id=blueprint_app_id,<br/>client_secret=blueprint_secret,<br/>scope=api://AzureADTokenExchange/.default,<br/>fmi_path=agent_identity_id)
+    E->>C: {{ parent_token }}
+    end
+    rect {_S3}
+    Note right of C: Step 4 — Agent OBO Exchange
+    C->>E: POST /token<br/>(grant_type=jwt-bearer,<br/>client_id=agent_identity_id,<br/>client_assertion=parent_token,<br/>assertion=user_token,<br/>scope=api://api-a/access_as_user)
+    E->>C: {{ agent_token_A }}<br/>(sub: agent, upn: user, aud: API A)
+    end
+    rect {_S4}
+    Note right of C: Step 5 — Call API A
+    C->>A: GET /me<br/>Authorization: Bearer {{agent_token_A}}
+    A->>C: {{ claims }}
     end
     rect {_S5}
-    Note right of C: Step 6 — OBO Exchange (API A → API B)
-    C->>E: POST /token<br/>(grant_type=jwt-bearer,<br/>assertion={{agent_token_A}},<br/>client_id=api_a_app_id,<br/>scope=api://api-b/.default)
-    E->>C: {{ token_B }}
+    Note right of C: Step 6 — API A OBO Exchange
+    A->>E: POST /token<br/>(grant_type=jwt-bearer,<br/>assertion={{agent_token_A}},<br/>scope=api://api-b/.default)
+    E->>A: {{ access_token for API B }}
     end
     rect {_S6}
     Note right of C: Step 7 — Call API B
-    C->>B: GET /data<br/>Authorization: Bearer {{token_B}}
-    B->>C: {{ data }}
+    A->>B: GET /data<br/>Authorization: Bearer {{token_B}}
+    B->>A: {{ data }}
+    A->>C: {{ data }}
     end""",
 
     "auth_code_cached": f"""sequenceDiagram
@@ -500,5 +539,7 @@ DIAGRAMS = {
 
 
 def get_diagram(flow_type: str) -> str:
-    """Return the Mermaid diagram for a flow type, or a fallback."""
-    return DIAGRAMS.get(flow_type, f"sequenceDiagram\n    Note over Client: Unknown flow: {flow_type}")
+    """Return the Mermaid diagram for a known flow type."""
+    if flow_type not in DIAGRAMS:
+        raise ValueError(f"Unknown flow type: {flow_type}")
+    return DIAGRAMS[flow_type]

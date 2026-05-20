@@ -7,7 +7,20 @@
         <button id="btn-flyout" class="flyout-toggle" title="Flow configuration">☰</button>
         <h1>Entra OAuth Explorer</h1>
         <div class="top-bar-spacer"></div>
+        <nav class="mode-switch" aria-label="Experience mode">
+            {% if simulation_mode %}
+            <span class="mode-option active">Simulated demo</span>
+            <a class="mode-option" href="/auth/login?scope=openid+profile+offline_access">Live auth</a>
+            {% else %}
+            <a class="mode-option" href="/mode/simulated">Simulated demo</a>
+            <span class="mode-option active">Live auth</span>
+            {% endif %}
+        </nav>
         <div class="session-status">
+            {% if simulation_mode %}
+            <span id="status-simulation" class="status-badge status-sim">Simulated demo</span>
+            <span class="status-hint">Sign in to use live Entra auth.</span>
+            {% endif %}
             <span id="status-id" class="status-badge status-none">No ID token</span>
             <span id="status-refresh" class="status-badge status-none">No refresh token</span>
         </div>
@@ -32,7 +45,7 @@
         <div class="id-pane-body about-body">
             <section class="about-section">
                 <h3>What is this?</h3>
-                <p>Entra OAuth Explorer is an interactive teaching tool that visualizes OAuth 2.0 and Entra ID token flows in real time. It shows you exactly what happens at every step &mdash; the HTTP requests, the token exchanges, and the decoded JWT claims &mdash; so you can understand how authentication actually works.</p>
+                <p>Entra OAuth Explorer is an interactive teaching tool that visualizes OAuth 2.0 and Entra ID token flows in real time. It shows you exactly what happens at every step &mdash; the HTTP requests, the token exchanges, and the decoded JWT claims &mdash; so you can understand how authentication actually works. You can explore these flows in Simulated demo mode before signing in.</p>
             </section>
             <section class="about-section">
                 <h3>How to Use</h3>
@@ -102,7 +115,7 @@
             </section>
             <section class="about-section">
                 <h3>Built By</h3>
-                <p>Created by <strong>Vince Smith</strong> using <strong>GitHub Copilot</strong> (Claude Opus 4.6) in VS Code. The entire application &mdash; backend, frontend, Entra configuration scripts, and test suite &mdash; was built through conversation-driven development with an AI coding agent.</p>
+                <p>Created by <strong>Vince Smith</strong> using <strong>GitHub Copilot</strong> in VS Code. The entire application &mdash; backend, frontend, Entra configuration scripts, and test suite &mdash; was built through conversation-driven development with an AI coding agent.</p>
             </section>
         </div>
     </aside>

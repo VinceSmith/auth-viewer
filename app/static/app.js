@@ -9,6 +9,7 @@ var currentStepIndex = 0;
 var currentFlowType = '';
 var highlightMap = {};
 var diagramStepRects = [];
+var simulationMode = Boolean(window.APP_CONFIG && window.APP_CONFIG.simulation_mode);
 
 // Sign-in log polling state
 let signinLogTimer = null;
@@ -294,6 +295,7 @@ function getEffectiveFlowType() {
 
 function getDiagramKey() {
     const ft = getEffectiveFlowType();
+    if (ft === 'agent_id_obo' && getChainTarget() === 'api_a') return 'agent_id_obo_chain';
     if (ft === 'client_credentials_chain' || ft === 'agent_id_autonomous_chain') {
         const scope = getScope();
         if (scope.includes('graph.microsoft.com')) return ft + '_graph';
@@ -339,7 +341,9 @@ function updateFlowUI() {
     if (!currentStillVisible && firstVisible) firstVisible.selected = true;
 
     // Button text
-    if (isUserAuth && !reuseIdCheckbox?.checked) {
+    if (simulationMode) {
+        btnExecute.textContent = 'Execute Flow';
+    } else if (isUserAuth && !reuseIdCheckbox?.checked) {
         btnExecute.textContent = 'Sign In & Execute';
     } else {
         btnExecute.textContent = 'Execute Flow';
@@ -742,7 +746,7 @@ btnExecute.addEventListener('click', async () => {
     updateDiagramHeader();
 
     // User auth flows
-    if (authCategory === 'user_auth') {
+    if (authCategory === 'user_auth' && !simulationMode) {
         sessionStorage.setItem('flow_start_time', new Date().toISOString());
 
         // Try silent acquire first when the checkbox is checked (reuse stored session).
@@ -822,7 +826,7 @@ btnExecute.addEventListener('click', async () => {
 
     try {
         const apiScope = scope.startsWith('chain:') ? scope.slice(6) : scope;
-        const payload = { flow_type: flowType, scope: apiScope };
+        const payload = { flow_type: flowType, scope: apiScope, chain_target: chainTarget };
         const resp = await fetch('/api/execute', {
             method: 'POST',
             headers: { 'Content-Type': 'application/json' },
@@ -897,15 +901,22 @@ async function updateSessionStatus() {
         const data = await resp.json();
         const idBadge = document.getElementById('status-id');
         const refreshBadge = document.getElementById('status-refresh');
+        simulationMode = !!data.simulation_mode;
 
-        if (data.has_id_token) {
+        if (simulationMode && data.has_id_token) {
+            idBadge.textContent = 'ID token';
+            idBadge.className = 'status-badge status-none';
+        } else if (data.has_id_token) {
             idBadge.textContent = '✓ ID token';
             idBadge.className = 'status-badge status-has';
         } else {
             idBadge.textContent = 'No ID token';
             idBadge.className = 'status-badge status-none';
         }
-        if (data.has_refresh_token) {
+        if (simulationMode && data.has_refresh_token) {
+            refreshBadge.textContent = 'Refresh token';
+            refreshBadge.className = 'status-badge status-none';
+        } else if (data.has_refresh_token) {
             refreshBadge.textContent = '✓ Refresh token';
             refreshBadge.className = 'status-badge status-has';
         } else {
@@ -914,7 +925,7 @@ async function updateSessionStatus() {
         }
 
         // Enable/disable stored ID token checkbox
-        const hasIdToken = !!data.has_id_token;
+        const hasIdToken = !simulationMode && !!data.has_id_token;
 
         if (reuseIdCheckbox) {
             const wasDisabled = reuseIdCheckbox.disabled;
@@ -1168,9 +1179,12 @@ function showTokenExpiredError(message) {
     const container = document.getElementById('resp-display');
     const scope = getScope();
     const flowType = getEffectiveFlowType();
+    const action = simulationMode
+        ? ''
+        : `<button class="btn btn-primary" onclick="window.location.href='/auth/login?flow_type=${encodeURIComponent(flowType)}&target_scope=${encodeURIComponent(scope)}&prompt=login'">Sign In Again</button>`;
     container.innerHTML = `<div class="error-banner" style="margin:0">`
         + `<p style="margin:0 0 10px 0">${escapeHtml(message)}</p>`
-        + `<button class="btn btn-primary" onclick="window.location.href='/auth/login?flow_type=${encodeURIComponent(flowType)}&target_scope=${encodeURIComponent(scope)}&prompt=login'">Sign In Again</button>`
+        + action
         + `</div>`;
     switchTab('response');
     updateSessionStatus();
@@ -1633,6 +1647,13 @@ function startSigninLogPolling(afterTs) {
     signinLogEmpty.style.display = 'none';
     signinLogToolbar.style.display = 'flex';
 
+    if (simulationMode) {
+        signinLogPreviews = [];
+        signinLogCountdownEl.textContent = 'Sign-in logs';
+        fetchSigninLogs();
+        return;
+    }
+
     // Extract instant previews from current steps
     signinLogPreviews = extractSigninPreviews(currentSteps);
 
@@ -1734,6 +1755,16 @@ async function fetchSigninLogs() {
  * Returns true if there's data to show (preview or Graph), false otherwise.
  */
 function renderSigninLogForStep(correlationId) {
+    if (simulationMode) {
+        const simulatedEntries = signinLogEntries.filter(e => e.simulated);
+        if (simulatedEntries.length > 0) {
+            signinLogToolbar.style.display = 'flex';
+            signinLogEmpty.style.display = 'none';
+            renderSigninLogEntries(simulatedEntries);
+            return true;
+        }
+    }
+
     if (!correlationId) {
         signinLogContent.innerHTML = '';
         signinLogToolbar.style.display = 'none';
@@ -1806,6 +1837,8 @@ function renderSigninLogEntries(entries) {
         // ── Source badge ──
         let sourceBadge;
         if (isPreview) {
+            sourceBadge = '';
+        } else if (entry.simulated) {
             sourceBadge = '';
         } else if (isEnriched) {
             sourceBadge = '<span class="signin-log-source enriched">Enriched</span>';

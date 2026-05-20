@@ -5,6 +5,7 @@ import pytest
 from fastapi.testclient import TestClient
 
 from app.main import _FlowError, _run_delegated_flow
+from tests.conftest import FAKE_SID, make_jwt, make_session_cookie
 
 
 FAKE_STEP = {"label": "Test", "request": {}, "response": {}, "token": None}
@@ -80,6 +81,54 @@ class TestUnknownFlowType:
     def test_empty_flow_type_returns_400(self, client):
         resp = _post(client, "")
         assert resp.status_code == 400
+
+
+class TestNoImplicitFallbacks:
+    def test_live_auth_code_unknown_resource_returns_400(self, client):
+        from app.main import _token_store
+
+        _token_store[FAKE_SID] = {
+            "auth_code": {"access_token": make_jwt(), "refresh_token": "rt-value"},
+            "refresh_token": "rt-value",
+        }
+        resp = client.post(
+            "/api/execute",
+            json={
+                "flow_type": "auth_code",
+                "scope": "api://unknown-app/.default",
+                "user_token": make_jwt(payload={"aud": "unknown-app", "exp": 9_999_999_999}),
+            },
+            cookies={"session": make_session_cookie({"sid": FAKE_SID, "simulation_mode": False})},
+        )
+
+        assert resp.status_code == 400
+        assert "Unknown target resource" in resp.json()["error"]
+
+    def test_auth_login_unknown_flow_type_returns_400(self, client):
+        with patch("app.main.flows.build_auth_code_url", new_callable=AsyncMock) as mock_build:
+            resp = client.get("/auth/login?flow_type=not_a_flow", follow_redirects=False)
+
+        assert resp.status_code == 400
+        assert "Unknown flow type" in resp.text
+        mock_build.assert_not_called()
+
+    def test_unknown_diagram_returns_404(self, client):
+        resp = client.get("/api/diagram/not_a_flow")
+
+        assert resp.status_code == 404
+        assert "Unknown flow type" in resp.json()["error"]
+
+    def test_last_result_missing_flow_type_returns_error(self, client):
+        from app.main import _result_store
+
+        _result_store["missing-flow-type"] = {"result": {"steps": []}}
+        resp = client.get(
+            "/api/last-result",
+            cookies={"session": make_session_cookie({"result_id": "missing-flow-type"})},
+        )
+
+        assert resp.status_code == 500
+        assert "Stored result is missing flow_type" in resp.json()["error"]
 
 
 # ---------------------------------------------------------------------------

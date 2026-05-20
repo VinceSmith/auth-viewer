@@ -16,7 +16,8 @@ from tests.conftest import (
     make_session_cookie,
 )
 
-MOCK_STEP = {"steps": [{"label": "X", "request": {}, "response": {}, "token": None}]}
+def _mock_step() -> dict:
+    return {"steps": [{"label": "X", "request": {}, "response": {}, "token": None}]}
 
 
 def _seed(data: dict) -> None:
@@ -53,7 +54,7 @@ def test_obo_uses_api_a_token_not_api_b_token(client):
     _seed({"auth_code": {"access_token": _api_b_token(), "refresh_token": ""}})
 
     with patch("app.main.flows.execute_obo", new_callable=AsyncMock) as mock_obo:
-        mock_obo.return_value = MOCK_STEP
+        mock_obo.return_value = _mock_step()
         resp = client.post(
             "/api/execute",
             json={"flow_type": "obo", "scope": f"api://{FAKE_API_A_ID}/access_as_user"},
@@ -76,7 +77,7 @@ def test_obo_does_not_use_agent_id_obo_token(client):
     _seed({"agent_id_obo": {"access_token": _blueprint_token(), "refresh_token": ""}})
 
     with patch("app.main.flows.execute_obo", new_callable=AsyncMock) as mock_obo:
-        mock_obo.return_value = MOCK_STEP
+        mock_obo.return_value = _mock_step()
         resp = client.post(
             "/api/execute",
             json={"flow_type": "obo", "scope": f"api://{FAKE_API_A_ID}/access_as_user"},
@@ -99,7 +100,7 @@ def test_agent_id_obo_does_not_use_obo_token(client):
     _seed({"obo": {"access_token": _api_a_token(), "refresh_token": ""}})
 
     with patch("app.main.flows.execute_agent_id_obo", new_callable=AsyncMock) as mock_agent_obo:
-        mock_agent_obo.return_value = MOCK_STEP
+        mock_agent_obo.return_value = _mock_step()
         resp = client.post(
             "/api/execute",
             json={"flow_type": "agent_id_obo", "scope": f"api://{FAKE_BLUEPRINT_ID}/access_as_user"},
@@ -124,7 +125,7 @@ def test_correct_api_a_token_flows_through_obo(client):
     _seed({"auth_code": {"access_token": real_api_a_token, "refresh_token": ""}})
 
     with patch("app.main.flows.execute_obo", new_callable=AsyncMock) as mock_obo:
-        mock_obo.return_value = MOCK_STEP
+        mock_obo.return_value = _mock_step()
         resp = client.post(
             "/api/execute",
             json={"flow_type": "obo", "scope": f"api://{app_settings.api_a_app_id}/access_as_user"},
@@ -146,7 +147,7 @@ def test_client_credentials_ignores_user_token_store(client):
     _seed({"auth_code": {"access_token": _api_a_token(), "refresh_token": ""}})
 
     with patch("app.main.flows.execute_client_credentials", new_callable=AsyncMock) as mock_cc:
-        mock_cc.return_value = MOCK_STEP
+        mock_cc.return_value = _mock_step()
         resp = client.post(
             "/api/execute",
             json={"flow_type": "client_credentials", "scope": f"api://{FAKE_API_B_ID}/.default"},

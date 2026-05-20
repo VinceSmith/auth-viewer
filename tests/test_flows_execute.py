@@ -157,12 +157,21 @@ class TestCallResource:
         assert step["label"] == "Call API B"
         assert "8002" in client.get.call_args[0][0]
 
-    async def test_unknown_scope_returns_skip_step_without_network(self, prefill_oidc):
+    async def test_unknown_scope_raises_without_network(self, prefill_oidc):
         from app.auth.flows import _call_resource
 
-        # No httpx mock needed — function returns early
-        step = await _call_resource(access_token="token", scope="api://unknown-app/.default")
-        assert "Skipped" in step["label"]
+        with pytest.raises(ValueError, match="Unknown target resource"):
+            await _call_resource(access_token="token", scope="api://unknown-app/.default")
+
+    async def test_empty_configured_app_ids_do_not_match_unknown_scope(self, prefill_oidc, monkeypatch):
+        from app.auth import flows
+        from app.auth.flows import _call_resource
+
+        monkeypatch.setattr(flows.settings, "api_a_app_id", "")
+        monkeypatch.setattr(flows.settings, "api_b_app_id", "")
+
+        with pytest.raises(ValueError, match="Unknown target resource"):
+            await _call_resource(access_token="token", scope="api://unknown-app/.default")
 
     async def test_access_token_decoded_in_step_tokens(self, prefill_oidc):
         from app.auth.flows import _call_resource
@@ -438,58 +447,15 @@ class TestExecuteAgentIdOboRouting:
             f"Direct scope should skip API A; got steps: {labels}"
         )
 
-    async def test_chain_target_param_routes_to_chained_path(self, prefill_oidc):
-        """chain_target='api_a' should use chained path even without via_api_a: prefix.
-
-        This is the structural fix: the routing decision is now a dedicated parameter
-        instead of being encoded in the scope string, so scope manipulation can never
-        silently lose the routing signal.
-        """
+    async def test_unknown_chain_target_raises(self, prefill_oidc):
         from app.auth.flows import execute_agent_id_obo
 
-        user_token = make_jwt(payload={"sub": "user-1", "scp": "access_as_user", "exp": 9_999_999_999})
-        parent_token = make_jwt(payload={"aud": "api://AzureADTokenExchange", "exp": 9_999_999_999})
-        api_a_token = make_jwt(payload={"aud": f"api://{FAKE_API_A_ID}", "exp": 9_999_999_999})
-        api_b_token = make_jwt(payload={"aud": f"api://{FAKE_API_B_ID}", "exp": 9_999_999_999})
-
-        # 5 calls: parent token, OBO→API A, Call API A, OBO→API B, Call API B
-        ctx1, _ = make_httpx_ctx(make_mock_response(200, {"access_token": parent_token}))
-        ctx2, _ = make_httpx_ctx(make_mock_response(200, {"access_token": api_a_token}))
-        ctx3, _ = make_httpx_ctx(make_mock_response(200, {"user": "api-a-user"}))
-        ctx4, _ = make_httpx_ctx(make_mock_response(200, {"access_token": api_b_token}))
-        ctx5, _ = make_httpx_ctx(make_mock_response(200, {"data": "api-b-data"}))
-
-        with patch("httpx.AsyncClient", side_effect=[ctx1, ctx2, ctx3, ctx4, ctx5]):
-            result = await execute_agent_id_obo(
-                user_token=user_token,
-                scope=f"api://{FAKE_API_B_ID}/.default",  # NO via_api_a: prefix
-                chain_target="api_a",                      # Explicit routing param
+        with pytest.raises(ValueError, match="Unknown chain target"):
+            await execute_agent_id_obo(
+                user_token=make_jwt(),
+                scope=f"api://{FAKE_API_B_ID}/.default",
+                chain_target="not_a_target",
             )
-
-        labels = [s["label"] for s in result["steps"]]
-        assert any("API A" in l and ("Call" in l or "OBO" in l) for l in labels), (
-            f"chain_target='api_a' should route to chained path; got: {labels}"
-        )
-
-    async def test_chain_target_param_propagated_through_api_execute(self, prefill_oidc):
-        """The /api/execute endpoint should pass chain_target to execute_agent_id_obo."""
-        from fastapi.testclient import TestClient
-        from app.main import app
-
-        with TestClient(app) as client:
-            with patch("app.main.flows.execute_agent_id_obo", new_callable=AsyncMock) as mock:
-                mock.return_value = {"steps": [{"label": "Test", "request": {}, "response": {}, "token": None}]}
-                with patch("app.main._run_delegated_flow", new_callable=AsyncMock) as mock_run:
-                    mock_run.return_value = mock.return_value
-                    resp = client.post(
-                        "/api/execute",
-                        json={
-                            "flow_type": "agent_id_obo",
-                            "scope": f"api://{FAKE_API_B_ID}/.default",
-                            "chain_target": "api_a",
-                        },
-                    )
-            assert resp.status_code == 200
 
 
 # ────────────────────────────────────────────────────────────────
@@ -554,6 +520,12 @@ class TestDiagramIndex:
         assert len(steps) == 4, f"Expected 4 steps, got {len(steps)}: {[s['label'] for s in steps]}"
         assert indices == [0, 1, 2, 3], f"Expected [0,1,2,3], got {indices}"
 
+    async def test_client_credentials_chain_unknown_target_raises(self, prefill_oidc):
+        from app.auth.flows import execute_client_credentials_chain
+
+        with pytest.raises(ValueError, match="Unknown target resource"):
+            await execute_client_credentials_chain(scope="chain:api://unknown-app/.default")
+
     async def test_execute_obo_diagram_indices(self, prefill_oidc):
         """OBO steps start at index 2 (S0/S1 are Authorize/Exchange from auth_callback)."""
         from app.auth.flows import execute_obo
@@ -616,6 +588,12 @@ class TestDiagramIndex:
         indices = [s.get("diagram_index") for s in steps]
         assert len(steps) == 5, f"Expected 5 steps, got {len(steps)}: {[s['label'] for s in steps]}"
         assert indices == [0, 1, 2, 3, 4], f"Expected [0,1,2,3,4], got {indices}"
+
+    async def test_agent_id_autonomous_chain_unknown_target_raises(self, prefill_oidc):
+        from app.auth.flows import execute_agent_id_autonomous_chain
+
+        with pytest.raises(ValueError, match="Unknown target resource"):
+            await execute_agent_id_autonomous_chain(scope="chain:api://unknown-app/.default")
 
     async def test_execute_agent_id_obo_direct_diagram_indices(self, prefill_oidc):
         """Direct path: Parent=2, OBO Exchange=3, Call Resource=4."""

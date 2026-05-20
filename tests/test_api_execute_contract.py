@@ -50,7 +50,7 @@ def _make_token(aud: str, exp: int = 9_999_999_999) -> str:
     return make_jwt(payload={"aud": aud, "exp": exp, "sub": "u1", "scp": "access_as_user"})
 
 
-def _post_execute(client: TestClient, flow_type: str, scope: str = "openid profile",
+def _post_execute(client: TestClient, flow_type: str, scope: str = f"api://{FAKE_API_A_ID}/.default",
                   sid: str = FAKE_SID) -> dict:
     resp = client.post(
         "/api/execute",

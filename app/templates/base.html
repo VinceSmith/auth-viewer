@@ -10,7 +10,10 @@
 <body>
     {% block content %}{% endblock %}
     {# Single source of truth: step fill colours come from diagrams.py via the template context #}
-    <script>const STEP_FILLS = {{ step_fills_json }};</script>
+    <script>
+        window.APP_CONFIG = {{ app_config_json | safe }};
+        const STEP_FILLS = {{ step_fills_json }};
+    </script>
     <script>
         mermaid.initialize({
             startOnLoad: false,

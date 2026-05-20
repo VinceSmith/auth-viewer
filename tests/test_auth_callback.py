@@ -202,6 +202,29 @@ def test_callback_sets_last_flow_in_session():
     )
 
 
+def test_callback_marks_session_as_live_auth():
+    access_token, id_token = _make_tokens()
+    result = _success_result(access_token, id_token)
+    client = TestClient(app, raise_server_exceptions=False)
+
+    with patch("app.main.flows.exchange_auth_code", new_callable=AsyncMock) as mock_ex:
+        mock_ex.return_value = result
+        resp = client.get(
+            f"/auth/callback?code={FAKE_CODE}&state={FAKE_STATE}",
+            cookies={"session": _base_cookie()},
+            follow_redirects=False,
+        )
+
+    assert resp.status_code == 303
+
+    raw_cookie = resp.cookies.get("session", "")
+    signer = TimestampSigner(settings.session_secret)
+    data = signer.unsign(raw_cookie, return_timestamp=False)
+    session_data = json.loads(base64.b64decode(data))
+
+    assert session_data.get("simulation_mode") is False
+
+
 def test_callback_profile_login_stores_steps_with_authorize_and_exchange():
     """BUG: session bootstrap callback strips 'steps' from the stored result.
     The frontend renders no step pills when steps=[].

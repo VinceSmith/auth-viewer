@@ -15,12 +15,31 @@ _logger = logging.getLogger(__name__)
 
 
 async def _assertion_params(client_id: str) -> dict:
-    """Build client_assertion parameters for a token request."""
+    """Build client auth parameters for a token request.
+
+    Uses client_secret when available (short-term fix); falls back to
+    FIC-based client_assertion via DefaultAzureCredential.
+    """
+    # Short-term: prefer secrets over FIC/MSI (cross-tenant issuer mismatch)
+    secret = _secret_for(client_id)
+    if secret:
+        return {"client_secret": secret}
     assertion = await _cred.get_client_assertion()
     return {
         "client_assertion_type": "urn:ietf:params:oauth:client-assertion-type:jwt-bearer",
         "client_assertion": assertion,
     }
+
+
+def _secret_for(client_id: str) -> str:
+    """Return the client secret for a given app ID, or empty string if none."""
+    if client_id == settings.client_id and settings.client_secret:
+        return settings.client_secret
+    if client_id == settings.api_a_app_id and settings.api_a_client_secret:
+        return settings.api_a_client_secret
+    if client_id == settings.agent_blueprint_app_id and settings.agent_blueprint_secret:
+        return settings.agent_blueprint_secret
+    return ""
 
 
 # ---------------------------------------------------------------------------
@@ -218,11 +237,7 @@ async def _call_resource(*, access_token: str, scope: str) -> dict:
             desc = ("Call Microsoft Graph /organization with the app-only token. "
                     "Returns tenant organization details.")
     else:
-        return _build_step(
-            label="Call Resource (Skipped)",
-            description="Could not determine the target resource from the scope.",
-            highlights=_base_highlights(),
-        )
+        raise ValueError(f"Unknown target resource for scope: {scope or '<empty>'}")
 
     headers = {"Authorization": f"Bearer {access_token}"}
     try:
@@ -359,7 +374,9 @@ def _coerce_default_scope(scope: str) -> str:
     'openid profile api://xxx/access_as_user' are invalid. Extract the
     resource URI and append /.default.
     """
-    if scope.endswith("/.default"):
+    if not scope.strip():
+        raise ValueError("Unknown target resource for scope: <empty>")
+    if scope.endswith("/.default") and scope.startswith(("api://", "https://")):
         return scope
     # If scope contains multiple space-separated values, find the resource URI
     parts = scope.split()
@@ -368,8 +385,37 @@ def _coerce_default_scope(scope: str) -> str:
             # Strip any trailing scope name (e.g. /access_as_user) and add /.default
             base = part.rsplit("/", 1)[0] if "/" in part.split("://", 1)[-1] else part
             return f"{base}/.default"
-    # Fallback: just append /.default
-    return f"{scope}/.default"
+    raise ValueError(f"Unknown target resource for scope: {scope}")
+
+
+def _chain_target_for_scope(scope: str) -> tuple[str, str, str]:
+    """Resolve a chain downstream target from an explicit scope."""
+    actual_scope = scope.removeprefix("chain:").strip()
+    if "graph.microsoft.com" in actual_scope:
+        return actual_scope, "Graph", "https://graph.microsoft.com/v1.0/organization"
+    if (
+        actual_scope
+        and (
+            (settings.api_b_app_id and settings.api_b_app_id in actual_scope)
+            or (settings.api_b_scope and settings.api_b_scope in actual_scope)
+        )
+    ):
+        return actual_scope, "API B", f"{settings.api_b_base_url}/data"
+    raise ValueError(f"Unknown target resource for scope: {actual_scope or '<empty>'}")
+
+
+def _api_a_access_scope() -> str:
+    if settings.api_a_scope:
+        return settings.api_a_scope
+    if settings.api_a_app_id:
+        return f"api://{settings.api_a_app_id}/access_as_user"
+    raise ValueError("Missing API A app id/scope configuration")
+
+
+def _api_a_default_scope() -> str:
+    if settings.api_a_app_id:
+        return f"api://{settings.api_a_app_id}/.default"
+    raise ValueError("Missing API A app id configuration")
 
 
 def _humanize_scope(scope: str) -> str:
@@ -702,21 +748,17 @@ async def execute_client_credentials_chain(*, scope: str) -> dict:
     Step 3: API A acquires its own app-only token for downstream (shown from response)
     Step 4: API A calls downstream with its own token (shown from response)
     """
+    downstream_scope, downstream_label, downstream_url = _chain_target_for_scope(scope)
     _, fetched = await _ensure_oidc_discovery()
-    # Strip 'chain:' prefix added by the frontend for routing
-    actual_scope = scope.removeprefix("chain:")
-    is_graph = "graph.microsoft.com" in actual_scope
-    downstream_label = "Graph" if is_graph else "API B"
-    downstream_scope = actual_scope
-    downstream_url = "https://graph.microsoft.com/v1.0/organization" if is_graph else f"{settings.api_b_base_url}/data"
 
     # Step 1: Client gets token for API A
-    cc_coercion_note = _scope_coercion_note(f"api://{settings.api_a_app_id}/.default")
+    api_a_default_scope = _api_a_default_scope()
+    cc_coercion_note = _scope_coercion_note(api_a_default_scope)
     params = {
         "client_id": settings.client_id,
         **(await _assertion_params(settings.client_id)),
         "grant_type": "client_credentials",
-        "scope": _coerce_default_scope(f"api://{settings.api_a_app_id}/.default"),
+        "scope": _coerce_default_scope(api_a_default_scope),
     }
     result = await _post_token_endpoint(_token_endpoint(), params)
     cc_api_a_step = _result_to_step(
@@ -773,7 +815,7 @@ async def execute_obo(
     steps = [_oidc_discovery_step()] if fetched else []
 
     # ── Step 1: Call API A with the user token ──
-    api_a_scope = settings.api_a_scope or f"api://{settings.api_a_app_id}/access_as_user"
+    api_a_scope = _api_a_access_scope()
     call_api_a_step = await _call_resource(access_token=user_access_token, scope=api_a_scope)
     call_api_a_step["diagram_index"] = 2
     steps.append(call_api_a_step)
@@ -902,14 +944,8 @@ async def execute_agent_id_autonomous_chain(*, scope: str) -> dict:
     Step 4: API A's own CC grant to downstream (from response)
     Step 5: API A calls downstream (from response)
     """
+    downstream_scope, downstream_label, downstream_url = _chain_target_for_scope(scope)
     _, fetched = await _ensure_oidc_discovery()
-    # Strip 'chain:' prefix added by the frontend for routing
-    actual_scope = scope.removeprefix("chain:")
-    is_graph = "graph.microsoft.com" in actual_scope
-    downstream_label = "Graph" if is_graph else "API B"
-    downstream_scope = actual_scope
-    downstream_url = ("https://graph.microsoft.com/v1.0/organization" if is_graph
-                      else f"{settings.api_b_base_url}/data")
 
     # Step 1: Parent token
     step1_result, parent_step = await _acquire_parent_token()
@@ -928,7 +964,7 @@ async def execute_agent_id_autonomous_chain(*, scope: str) -> dict:
         return {"steps": steps}
 
     # Step 2: Exchange parent token for API A token
-    api_a_scope = _coerce_default_scope(f"api://{settings.api_a_app_id}/.default")
+    api_a_scope = _coerce_default_scope(_api_a_default_scope())
     step2_result, exchange_step = await _fmi_exchange(
         parent_token, api_a_scope, label="FMI Exchange (Agent → API A)",
     )
@@ -991,6 +1027,9 @@ async def execute_agent_id_obo(*, user_token: str, scope: str, chain_target: str
     silently break the chain path. The via_api_a: prefix is kept as backward
     compat only.
     """
+    if chain_target and chain_target != "api_a":
+        raise ValueError(f"Unknown chain target: {chain_target}")
+
     # Ensure OIDC discovery is cached for endpoint resolution
     _, fetched = await _ensure_oidc_discovery()
     steps_prefix = [_oidc_discovery_step()] if fetched else []
@@ -1086,7 +1125,7 @@ async def _agent_id_obo_chain(
     step1_result: dict, steps_prefix: list[dict],
 ) -> dict:
     """Chained Agent ID OBO: Agent → API A → downstream."""
-    api_a_scope = settings.api_a_scope or f"api://{settings.api_a_app_id}/access_as_user"
+    api_a_scope = _api_a_access_scope()
     step2_params = {
         "client_id": settings.agent_identity_id,
         "client_assertion_type": "urn:ietf:params:oauth:client-assertion-type:jwt-bearer",

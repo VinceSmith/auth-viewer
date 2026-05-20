@@ -903,6 +903,142 @@ describe('silent acquire: execute error handling', () => {
 });
 
 
+// ---------------------------------------------------------------------------
+// Simulation mode: user-auth execute path
+// ---------------------------------------------------------------------------
+
+describe('simulation mode execution', () => {
+  function createSimulationApp(fetchImpl) {
+    const dom = new JSDOM(MINIMAL_HTML, { runScripts: 'dangerously', url: 'http://localhost:8000' });
+    const win = dom.window;
+    const doc = win.document;
+    win.STEP_FILLS = DEFAULT_STEP_FILLS;
+    win.APP_CONFIG = { simulation_mode: true };
+    win.fetch = fetchImpl;
+    win.mermaid = {
+      initialize: () => {},
+      render: () => Promise.resolve({ svg: '<svg></svg>' }),
+    };
+    const _origGetById = doc.getElementById.bind(doc);
+    doc.getElementById = (id) => _origGetById(id) || doc.createElement('div');
+    dom.window.eval(APP_JS);
+    return win;
+  }
+
+  function simulationFetch(fetchCalls) {
+    return (url) => {
+      fetchCalls.push(url);
+      if (url === '/api/session') {
+        return Promise.resolve({ ok: true, json: () => Promise.resolve({
+          simulation_mode: true,
+          has_id_token: true,
+          has_refresh_token: true,
+        }) });
+      }
+      if (url === '/api/execute') {
+        return Promise.resolve({ ok: true, json: () => Promise.resolve({
+          result: {
+            steps: [
+              { label: 'Authorize Redirect', diagram_index: 0, description: 'The browser redirects to Entra ID.', tokens: {}, highlights: {} },
+            ],
+          },
+          diagram: 'sequenceDiagram\n  participant C as Client App',
+        }) });
+      }
+      if (String(url).startsWith('/api/signin-logs')) {
+        return Promise.resolve({ ok: true, json: () => Promise.resolve({
+          simulation_mode: true,
+          entries: [{ simulated: true, userDisplayName: 'Adele Vance', status: { errorCode: 0, additionalDetails: 'Success' }, createdDateTime: '2026-05-09T00:00:00Z' }],
+        }) });
+      }
+      return Promise.resolve({ ok: true, json: () => Promise.resolve({}) });
+    };
+  }
+
+  test('user-auth execute calls /api/execute instead of redirecting to /auth/login', async () => {
+    const fetchCalls = [];
+    const w = createSimulationApp(simulationFetch(fetchCalls));
+
+    await new Promise(r => setTimeout(r, 50));
+    fetchCalls.length = 0;
+
+    w.authCategory = 'user_auth';
+    w.clientType = 'app';
+    w.document.getElementById('reuse-id-token').checked = false;
+    w.document.getElementById('btn-execute').click();
+    await new Promise(r => setTimeout(r, 100));
+
+    expect(fetchCalls).toContain('/api/execute');
+    expect(fetchCalls).not.toContain('/api/silent-acquire');
+    expect(fetchCalls.some(url => String(url).startsWith('/auth/login'))).toBe(false);
+  });
+
+  test('reuse checkbox does not trigger silent acquire in simulation mode', async () => {
+    const fetchCalls = [];
+    const w = createSimulationApp(simulationFetch(fetchCalls));
+
+    await new Promise(r => setTimeout(r, 50));
+    fetchCalls.length = 0;
+
+    w.authCategory = 'user_auth';
+    w.document.getElementById('reuse-id-token').checked = true;
+    w.document.getElementById('btn-execute').click();
+    await new Promise(r => setTimeout(r, 100));
+
+    expect(fetchCalls).toContain('/api/execute');
+    expect(fetchCalls).not.toContain('/api/silent-acquire');
+  });
+
+  test('token status badges stay muted in simulation mode', async () => {
+    const fetchCalls = [];
+    const w = createSimulationApp(simulationFetch(fetchCalls));
+
+    await new Promise(r => setTimeout(r, 50));
+
+    const idBadge = w.document.getElementById('status-id');
+    const refreshBadge = w.document.getElementById('status-refresh');
+
+    expect(idBadge.textContent).toBe('ID token');
+    expect(idBadge.className).toBe('status-badge status-none');
+    expect(refreshBadge.textContent).toBe('Refresh token');
+    expect(refreshBadge.className).toBe('status-badge status-none');
+  });
+
+  test('startSigninLogPolling does not start a timer in simulation mode', () => {
+    const fetchCalls = [];
+    const w = createSimulationApp(simulationFetch(fetchCalls));
+    let intervalCount = 0;
+    w.setInterval = () => { intervalCount += 1; return 1; };
+
+    w.startSigninLogPolling('2026-05-09T00:00:00Z');
+
+    expect(intervalCount).toBe(0);
+  });
+
+  test('sign-in logs render without correlation-id matching in simulation mode', async () => {
+    const fetchCalls = [];
+    const w = createSimulationApp(simulationFetch(fetchCalls));
+
+    w.setSteps([
+      {
+        label: 'OIDC Discovery',
+        diagram_index: -1,
+        description: 'The client reads OpenID Connect metadata.',
+        response: { headers: { 'x-ms-request-id': 'sim-discovery' } },
+        tokens: {},
+        highlights: {},
+      },
+    ]);
+    w.startSigninLogPolling('2026-05-09T00:00:00Z');
+    await new Promise(r => setTimeout(r, 50));
+
+    const content = w.document.getElementById('signin-log-content').textContent;
+    expect(content).toMatch(/Adele Vance|Success/i);
+    expect(content).not.toMatch(/Waiting for sign-in log/i);
+  });
+});
+
+
 describe('httpStatusText', () => {
   let w;
   beforeEach(() => { w = createApp(); });

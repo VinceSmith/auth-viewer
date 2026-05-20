@@ -8,9 +8,11 @@ class Settings(BaseSettings):
 
     # Client app
     client_id: str = ""
+    client_secret: str = ""
 
     # Resource API A
     api_a_app_id: str = ""
+    api_a_client_secret: str = ""
     api_a_scope: str = ""
     api_a_base_url: str = "http://localhost:8001"
 
@@ -21,11 +23,16 @@ class Settings(BaseSettings):
 
     # Agent ID
     agent_blueprint_app_id: str = ""
+    agent_blueprint_secret: str = ""
     agent_identity_id: str = ""
     agent_identity_tenant_id: str = ""
+    platform_service_base_url: str = "http://localhost:8003"
 
     # Session
     session_secret: str = "change-me"
+
+    # Demo mode
+    simulation_mode: bool = False
 
     model_config = {"env_file": ".env", "env_file_encoding": "utf-8", "extra": "ignore"}
 
