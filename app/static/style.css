@@ -834,7 +834,6 @@ select:focus, input:focus {
 .status-none { background: var(--border); color: var(--text-muted); }
 .status-has { background: #1b5e20; color: var(--success); }
 .status-expired { background: #5e3b00; color: #ffa726; }
-.status-sim { background: #214d57; color: #7ee6f2; }
 
 .status-hint {
     color: var(--text-muted);

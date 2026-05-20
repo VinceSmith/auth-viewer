@@ -64,6 +64,7 @@ def test_index_defaults_to_simulated_without_env_flag(client, monkeypatch):
     assert "Simulated demo" in body
     assert "Sign in for live auth" not in body
     assert ">Live auth<" in body
+    assert "id=\"status-simulation\"" not in body
     assert "Sign in to use live Entra auth" in body
     assert "You can explore these flows in Simulated demo mode before signing in." in body
     assert client.get("/api/session").json()["simulation_mode"] is True
