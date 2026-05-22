@@ -71,6 +71,7 @@
                 <ul>
                     <li><strong>App (Service Principal)</strong> &mdash; A standard Entra ID application. The client app directly requests tokens from Entra ID using its own credentials.</li>
                     <li><strong>Agent (Agent ID)</strong> &mdash; An Entra Agent Identity. The Blueprint app acquires a parent token, then the Agent Identity exchanges it for a downstream token via Workload Identity Federation. In delegated mode, the agent also performs an OBO exchange to preserve the user's context.</li>
+                    <li><strong>Agent + Ephemeral Mode</strong> &mdash; Same Agent ID infrastructure, but adds an <em>Intent Declaration</em> step before credentials are issued and constrains the token to the minimal declared scope. Demonstrates the solution to the intent-execution separation problem.</li>
                 </ul>
                 <h4>Target Resource</h4>
                 <ul>
@@ -79,6 +80,31 @@
                     <li><strong>API A &rarr; Graph (OBO)</strong> &mdash; Same OBO pattern, targeting Microsoft Graph as the downstream resource.</li>
                     <li><strong>API A &rarr; API B (chain)</strong> &mdash; Multi-hop app-only chain. The client gets an app token for API A, then API A does its own client credentials grant for API B.</li>
                     <li><strong>API A &rarr; Graph (chain)</strong> &mdash; Same chain pattern, targeting Microsoft Graph downstream.</li>
+                </ul>
+            </section>
+            <section class="about-section">
+                <h3>Intent-Execution Separation Problem</h3>
+                <p>Agentic AI systems face a fundamental trust gap: the user tells the agent <em>what to do</em>, but the agent then acts autonomously using broad credentials &mdash; and the user has no insight into exactly what API calls are being made on their behalf. This is the <strong>intent-execution separation problem</strong>.</p>
+                <h4>The Problem</h4>
+                <ul>
+                    <li>The user's instruction ("book a meeting") is expressed in natural language.</li>
+                    <li>The agent translates this into concrete API calls using whatever credentials it has.</li>
+                    <li>The user cannot verify that the agent is doing only what was intended.</li>
+                    <li>Standard agent credentials ('.default' scope) grant the agent all pre-configured app permissions &mdash; far more than any single task requires.</li>
+                </ul>
+                <h4>The Ephemeral Agent Pattern</h4>
+                <p>The <strong>Ephemeral Mode</strong> flow (available under Client Credentials &rarr; Agent) demonstrates one solution:</p>
+                <ol>
+                    <li><strong>Intent Declaration</strong> &mdash; Before any credentials are issued, the agent explicitly states what it will do and requests only the permissions needed. This declaration is logged for audit.</li>
+                    <li><strong>Scope Minimisation</strong> &mdash; The token exchange requests only the declared scope, not '.default'. Entra ID will not issue a token with broader permissions than requested &mdash; the constraint is cryptographic, not policy.</li>
+                    <li><strong>Time-Bounded Access</strong> &mdash; The token expires in ~1 hour and cannot be silently renewed. The agent must re-declare intent for each new task, giving humans a recurring opportunity to review or deny.</li>
+                    <li><strong>Audit Trail</strong> &mdash; Every step is logged: the intent declaration, the token request (visible in Entra sign-in logs), and the resource call.</li>
+                </ol>
+                <h4>Complementary Controls</h4>
+                <ul>
+                    <li><strong>Custom App Consent Policies</strong> &mdash; Entra allows administrators to define custom policies that restrict which agents can request which permissions, requiring explicit admin consent for sensitive scopes.</li>
+                    <li><strong>Access Packages (Entitlement Management)</strong> &mdash; Time-limited access assignments via Entra Identity Governance. An agent's service principal is added to an Access Package for the duration of a task, then automatically removed.</li>
+                    <li><strong>Conditional Access</strong> &mdash; Policies can require specific conditions (MFA, compliant device, named location) before issuing agent tokens, adding another approval layer.</li>
                 </ul>
             </section>
             <section class="about-section">
@@ -173,6 +199,7 @@
                 <div class="flow-options">
                     <label><input type="radio" name="client_type" value="app" checked> App (Service Principal)</label>
                     <label><input type="radio" name="client_type" value="agent"> Agent (Agent ID / Agent User)</label>
+                    <label id="ephemeral-label" style="display:none; margin-left: 1.2em;"><input type="checkbox" id="ephemeral-mode"> Ephemeral Mode (intent-scoped, time-limited)</label>
                 </div>
             </fieldset>
 

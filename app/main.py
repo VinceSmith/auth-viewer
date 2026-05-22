@@ -946,6 +946,9 @@ async def api_execute(request: Request, body: ExecuteRequest):
         elif flow_type == "agent_id_autonomous_chain":
             result = await flows.execute_agent_id_autonomous_chain(scope=scope)
 
+        elif flow_type == "agent_ephemeral":
+            result = await flows.execute_agent_ephemeral(scope=scope)
+
         elif flow_type == "agent_id_obo":
             chain_target = body.chain_target
             result = await _run_delegated_flow(
